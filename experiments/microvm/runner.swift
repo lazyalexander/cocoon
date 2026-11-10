@@ -133,6 +133,26 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         // Stay halted on panic; negative panic timeouts reboot immediately.
         loader.commandLine = "console=hvc0 rdinit=/init quiet panic=0"
         let config = VZVirtualMachineConfiguration()
+        let platform = VZGenericPlatformConfiguration()
+        do {
+            if req.snapshotMode == "save", let path = req.snapshotPath {
+                let identifier = VZGenericMachineIdentifier()
+                try identifier.dataRepresentation.write(to: URL(fileURLWithPath: path + ".machine-id"),
+                                                        options: [.withoutOverwriting])
+                platform.machineIdentifier = identifier
+            } else if req.snapshotMode == "restore", let path = req.restorePath {
+                let data = try Data(contentsOf: URL(fileURLWithPath: path + ".machine-id"))
+                guard let identifier = VZGenericMachineIdentifier(dataRepresentation: data) else {
+                    throw NSError(domain: "invalid snapshot machine identifier", code: 1)
+                }
+                platform.machineIdentifier = identifier
+            }
+        } catch {
+            report["snapshot_error"] = error.localizedDescription
+            finish("snapshot_setup_failed", 2)
+            return
+        }
+        config.platform = platform
         config.bootLoader = loader
         config.cpuCount = 1
         config.memorySize = req.memoryMiB * 1024 * 1024

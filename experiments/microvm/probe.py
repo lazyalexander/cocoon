@@ -271,6 +271,119 @@ def snapshot_api():
     return 0 if result.returncode == 0 else 2
 
 
+def snapshot_marker(report, name):
+    prefix = name + ":"
+    for line in report.get("serial", "").splitlines():
+        if line.startswith(prefix):
+            parts = line.split(":")
+            if len(parts) == 3:
+                return parts[1], parts[2]
+    return None
+
+
+def verify_snapshot(save, restore, snapshot_bytes, disk_before, disk_after):
+    errors = []
+    for name, report in [("save", save), ("restore", restore)]:
+        if report.get("exit_code") != 0:
+            errors.append(name + " runner failed")
+        if report.get("termination_confirmed") is not True:
+            errors.append(name + " termination unconfirmed")
+    if save.get("guest_ready") is not True:
+        errors.append("save guest not ready")
+    if save.get("snapshot_saved") is not True:
+        errors.append("snapshot not saved")
+    if snapshot_bytes <= 0:
+        errors.append("snapshot missing or empty")
+    if not disk_before or disk_before != disk_after:
+        errors.append("disk generation mismatch")
+    ready = snapshot_marker(save, "COCOON_SNAPSHOT_READY")
+    resumed = snapshot_marker(restore, "COCOON_RESUMED")
+    if ready is None or resumed is None:
+        errors.append("snapshot continuity markers missing")
+    elif ready[0] != resumed[0]:
+        errors.append("snapshot token mismatch")
+    else:
+        try:
+            if int(resumed[1]) != int(ready[1]) + 1:
+                errors.append("guest memory counter did not advance")
+        except ValueError:
+            errors.append("invalid guest memory counter")
+    return errors
+
+
+def snapshot(args):
+    fixture = args.fixture.resolve(strict=True)
+    kernel = args.kernel.resolve(strict=True)
+    binary = BUILD / "cocoon-vz"
+    (ROOT / "runs").mkdir(exist_ok=True)
+    run = ROOT / "runs" / ("snapshot-" + uuid.uuid4().hex)
+    run.mkdir(mode=0o700)
+    reports = []
+    for sample in range(args.samples):
+        token = uuid.uuid4().hex
+        work = run / f"sample-{sample + 1}"
+        work.mkdir(mode=0o700)
+        disk = work / "root.raw"
+        shutil.copyfile(fixture / "root.raw", disk)
+        state = work / "state.vz"
+        base = {"kernel": str(kernel), "initrd": str(fixture / "initrd.cpio.gz"),
+                "token": token, "memoryMiB": 512, "seconds": 60,
+                "rootDisk": str(disk), "diskMode": "snapshot", "payload": token}
+        pair = []
+        disk_before = None
+        for mode in ["save", "restore"]:
+            if mode == "save":
+                extra = {"snapshotMode": "save", "snapshotPath": str(state)}
+            else:
+                if pair[0]["exit_code"] != 0 or pair[0].get("snapshot_saved") is not True:
+                    break
+                extra = {"snapshotMode": "restore", "restorePath": str(state)}
+            request = work / (mode + ".json")
+            request.write_text(json.dumps({**base, **extra}))
+            start = time.monotonic()
+            result = run_guest(binary, request, 60, False)
+            elapsed_ms = (time.monotonic() - start) * 1000
+            try:
+                observed = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                observed = {"error": "invalid runner JSON", "stdout": result.stdout.decode(errors="replace")}
+            observed.update(exit_code=result.returncode, serial=observed.get("guest_serial", ""),
+                            process_wall_ms=elapsed_ms)
+            (work / (mode + "-stderr.txt")).write_bytes(result.stderr)
+            pair.append(observed)
+            if mode == "save":
+                disk_before = digest(disk)
+        disk_after = digest(disk)
+        errors = verify_snapshot(pair[0], pair[1] if len(pair) == 2 else {},
+                                 state.stat().st_size if state.exists() else 0,
+                                 disk_before, disk_after)
+        report = {"sample": sample + 1, "save": pair[0],
+                  "restore": pair[1] if len(pair) == 2 else None,
+                  "snapshot_bytes": state.stat().st_size if state.exists() else 0,
+                  "disk_sha256_before_restore": disk_before,
+                  "disk_sha256_after_stop": disk_after,
+                  "errors": errors, "passed": not errors}
+        reports.append(report)
+        (work / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+        if errors:
+            break
+    summary = {"schema": "cocoon-snapshot-spike-v1", "requested_samples": args.samples,
+               "attempted_samples": len(reports), "passed_samples": sum(r["passed"] for r in reports),
+               "passed": len(reports) == args.samples and all(r["passed"] for r in reports),
+               "production_backend_qualified": False,
+               "samples": [{"sample": r["sample"], "passed": r["passed"], "errors": r["errors"],
+                            "snapshot_bytes": r["snapshot_bytes"],
+                            "save_wall_ms": r["save"]["process_wall_ms"],
+                            "snapshot_save_ms": r["save"].get("snapshot_save_ms"),
+                            "restore_wall_ms": r["restore"]["process_wall_ms"] if r["restore"] else None,
+                            "snapshot_restore_ms": r["restore"].get("snapshot_restore_ms") if r["restore"] else None}
+                           for r in reports]}
+    destination = run / "summary.json"
+    destination.write_text(json.dumps(summary, indent=2) + "\n")
+    print(json.dumps({"result": str(destination), **summary}, indent=2))
+    return 0 if summary["passed"] else 2
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -280,6 +393,10 @@ def main():
     kernel_parser.add_argument("--kernel", required=True, type=pathlib.Path)
     compile_parser = commands.add_parser("build")
     compile_parser.add_argument("--linker")
+    snapshot_parser = commands.add_parser("snapshot")
+    snapshot_parser.add_argument("--fixture", required=True, type=pathlib.Path)
+    snapshot_parser.add_argument("--kernel", required=True, type=pathlib.Path)
+    snapshot_parser.add_argument("--samples", type=int, choices=range(1, 11), default=3)
     for name in ["boot", "benchmark"]:
         launch = commands.add_parser(name)
         launch.add_argument("--kernel", required=True, type=pathlib.Path)
@@ -300,6 +417,8 @@ def main():
     if args.command == "build":
         build(args.linker)
         return 0
+    if args.command == "snapshot":
+        return snapshot(args)
     if args.command == "benchmark":
         return benchmark(args)
     report, _ = boot(args)

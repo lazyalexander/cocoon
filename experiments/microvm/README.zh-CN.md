@@ -138,3 +138,29 @@ SHA256SUMS 对照，但未验证独立签名。内核保留 Linux/Debian 许可�
 所有权恢复仍未实现或验收。
 
 新增有界磁盘路径见 [Rust 持久根磁盘实验](PERSISTENCE.zh-CN.md)。
+
+## 实验性跨进程状态保存与恢复
+
+构建持久化 Rust fixture 后，运行三个独立顺序样本：
+
+```sh
+python3 experiments/microvm/root_modules.py
+python3 experiments/microvm/probe.py build
+python3 experiments/microvm/build_root.py
+python3 experiments/microvm/probe.py snapshot --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --samples 3
+```
+
+`snapshot-api` 仅编译检查 SDK 接口。`snapshot` 命令启动 512 MiB 固定 guest，
+持久化并同步磁盘内容，暂停 VM、保存完整机器状态、确认旧 runner 停止，再由一个
+新 runner 从该状态恢复。仅存在于 RAM 的计数器必须在恢复后恰好递增一次，工作
+磁盘 SHA-256 必须保持不变。机器标识保存在私有状态文件旁，并在恢复时重用。
+不使用冷启动或本机执行回退，失败样本不重放。
+
+在 macOS 27.0.1（26A434）上，三个真实跨进程样本全部通过。每份状态文件为
+24,121,344 字节。保存进程总耗时 472.7～502.7 ms；恢复进程总耗时
+1,206.2～1,214.2 ms，其中包含 guest 在恢复标记前固定等待的一秒。这些是固定
+工作负载测量，不是已批准的生产预算或完整内存释放测量。
+
+本实验不实现生产租约、检查点/WAL 发布、主动挂起、流水线策略、产物保管、对抗性
+隔离或并行快照恢复。协议测试本身不证明 VM 支持；必须同时通过真实 guest 计数器、
+磁盘摘要、进程边界和框架终止检查。

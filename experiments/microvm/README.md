@@ -167,3 +167,34 @@ ignored `runs/`. Writable-root persistence, guest helper access and production
 ownership recovery remain unimplemented and unqualified.
 
 See the [Rust persistent-root experiment](PERSISTENCE.md) for the new bounded disk path.
+
+## Experimental cross-process state save and restore
+
+Build the persistent Rust fixture, then run three independent sequential samples:
+
+```sh
+python3 experiments/microvm/root_modules.py
+python3 experiments/microvm/probe.py build
+python3 experiments/microvm/build_root.py
+python3 experiments/microvm/probe.py snapshot --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --samples 3
+```
+
+`snapshot-api` performs a compile-only SDK check. The `snapshot` command boots a
+512 MiB fixed guest, persists and synchronizes a disk payload, pauses the VM,
+saves complete machine state, confirms the old runner stopped, and starts one new
+runner from that state. A RAM-only counter must advance exactly once across the
+restore and the working-disk SHA-256 must remain unchanged. The machine identifier
+is stored beside the private state file and reused on restore. No cold-boot or
+native fallback is used, and failed samples are not replayed.
+
+On macOS 27.0.1 (26A434), three of three real cross-process samples passed. Each
+state file was 24,121,344 bytes. Save-process wall times were 472.7–502.7 ms;
+restore-process wall times were 1,206.2–1,214.2 ms, including the guest's fixed
+one-second wait before its resumed marker. These are fixed-workload measurements,
+not approved production budgets or total memory-release measurements.
+
+This spike does not implement production leases, checkpoint/WAL publication,
+automatic suspension, pipeline policy, artifact custody, adversarial isolation, or
+parallel snapshot restore. Protocol tests alone do not establish VM support; the
+real guest counter, disk digest, process boundary, and framework termination
+checks are required.

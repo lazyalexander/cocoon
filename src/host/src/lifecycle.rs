@@ -33,18 +33,41 @@ pub struct ExecutionRecord {
     pub status: String,
 }
 
-fn process_alive(pid: u32) -> Result<bool> {
-    let status = Command::new("/bin/kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    Ok(status.success())
+pub(crate) fn working_disk_lease(manager: &Manager, id: VmId) -> Result<fs::File> {
+    let path = manager
+        .root
+        .join("vms")
+        .join(id.to_string())
+        .join("root.lease");
+    let lease = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    lease
+        .try_lock()
+        .map_err(|_| crate::Error::from("working disk is already owned"))?;
+    Ok(lease)
 }
 
-fn runner_exited(manager: &Manager, attempt: AttemptId, pid: u32) -> Result<bool> {
+fn process_alive(pid: u32, request: &Path) -> Result<bool> {
+    let output = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .args(["-o", "args="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let args = String::from_utf8(output.stdout)
+        .map_err(|_| crate::Error::from("runner process identity is not UTF-8"))?;
+    Ok(args.contains(&request.to_string_lossy().into_owned()))
+}
+
+fn runner_exited(manager: &Manager, attempt: AttemptId, pid: u32, request: &Path) -> Result<bool> {
     let mut children = manager
         .children
         .lock()
@@ -52,7 +75,7 @@ fn runner_exited(manager: &Manager, attempt: AttemptId, pid: u32) -> Result<bool
     if let Some(child) = children.get_mut(&attempt) {
         return Ok(child.try_wait()?.is_some());
     }
-    Ok(!process_alive(pid)?)
+    Ok(!process_alive(pid, request)?)
 }
 
 fn event(path: &Path, expected: &str, token: &str) -> Result<bool> {
@@ -120,6 +143,10 @@ impl Manager {
         fs::File::open(runner)?.read_exact(&mut header)?;
         if header != [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1] {
             return Err("runner must be a native ARM64 Mach-O executable".into());
+        }
+        let _lease = working_disk_lease(self, id)?;
+        if !self.admission_allowed()? {
+            return Err("host protection backpressure rejects new execution".into());
         }
         let mut vm = self.get(id)?;
         self.verify_image(vm.image)?;
@@ -329,6 +356,13 @@ impl Manager {
             "suspend_intent",
             serde_json::json!({"attempt": attempt}),
         )?;
+        if !process_alive(pid, &execution.request)? {
+            vm.state = VmState::Unknown;
+            execution.status = "unknown".into();
+            self.save_vm(&vm)?;
+            self.save_execution(&execution)?;
+            return Err("runner identity mismatch; no snapshot signal sent".into());
+        }
         let status = Command::new("/bin/kill")
             .arg("-USR1")
             .arg(pid.to_string())
@@ -347,8 +381,8 @@ impl Manager {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let saved = event(&execution.events, "snapshot_saved", &token)?;
-            let stopped =
-                event(&execution.events, "stopped", &token)? && runner_exited(self, attempt, pid)?;
+            let stopped = event(&execution.events, "stopped", &token)?
+                && runner_exited(self, attempt, pid, &execution.request)?;
             if saved && stopped {
                 vm.state = VmState::Suspended;
                 vm.active_lease = None;
@@ -422,6 +456,13 @@ impl Manager {
         self.save_vm(&vm)?;
         self.save_execution(&execution)?;
         self.append_journal(id, "stop_intent", serde_json::json!({"attempt": attempt}))?;
+        if !process_alive(pid, &execution.request)? {
+            vm.state = VmState::Unknown;
+            execution.status = "unknown".into();
+            self.save_vm(&vm)?;
+            self.save_execution(&execution)?;
+            return Err("runner identity mismatch; no signal sent".into());
+        }
         let status = Command::new("/bin/kill")
             .arg("-TERM")
             .arg(pid.to_string())
@@ -439,7 +480,9 @@ impl Manager {
         let token = attempt.raw().simple().to_string();
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if event(&execution.events, "stopped", &token)? && runner_exited(self, attempt, pid)? {
+            if event(&execution.events, "stopped", &token)?
+                && runner_exited(self, attempt, pid, &execution.request)?
+            {
                 vm.state = VmState::Stopped;
                 vm.active_lease = None;
                 execution.status = "stopped".into();
@@ -475,13 +518,15 @@ impl Manager {
         let mut execution = self.execution(attempt)?;
         let token = attempt.raw().simple().to_string();
         let pid = execution.pid.ok_or("runner spawn outcome unknown")?;
-        if event(&execution.events, "stopped", &token)? && runner_exited(self, attempt, pid)? {
+        if event(&execution.events, "stopped", &token)?
+            && runner_exited(self, attempt, pid, &execution.request)?
+        {
             vm.state = VmState::Stopped;
             vm.active_lease = None;
             execution.status = "stopped".into();
             self.save_vm(&vm)?;
             self.save_execution(&execution)?;
-        } else if runner_exited(self, attempt, pid)? {
+        } else if runner_exited(self, attempt, pid, &execution.request)? {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
             self.save_vm(&vm)?;
@@ -619,5 +664,20 @@ impl Manager {
 
     pub fn runner_sha256(&self, runner: &Path) -> Result<String> {
         hash(runner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pid_alone_is_not_runner_identity() {
+        let mut child = Command::new("/bin/sleep").arg("1").spawn().unwrap();
+        assert!(
+            !process_alive(child.id(), Path::new("/definitely-not-the-runner-request")).unwrap()
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }

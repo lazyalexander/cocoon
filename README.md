@@ -8,10 +8,12 @@ Cocoon is an independent execution runtime project designed for agent workloads.
 The first target is headless Linux ARM64 execution on Apple Silicon macOS.
 an-agent is the intended first consumer, not a runtime dependency.
 
-**Current status: persistent host registration, real diskless and ext4-root VM
-acceptance, and an offline Rust/vsock shell-project experiment. Three project
-boots passed code editing, execution and artifact receipt. Production agent
-admission, recovery and the complete Debian backend remain unqualified.**
+**Current status: the managed path supports real start/stop, authenticated private
+Unix-socket control, guest file/command operations, binary artifact export,
+cross-process suspend/resume, approved cold recovery, candidate versions, branches,
+rollback and policy-driven automatic suspension. The combined real-VM acceptance
+passes. This is still not a completed v0.1 qualification or a claim of adversarial
+isolation, capacity, or full Debian tooling.**
 
 ## Model
 
@@ -63,15 +65,15 @@ external agent service or complete Debian development image.
 
 ## Next acceptance gate
 
-The fixed Rust ext4-root fixture now passes ten persistence cycles. Next add
-the Debian userland and production guest-helper/control path; fixed-workload
-acceptance does not qualify those capabilities. It uses Virtualization.framework directly; OCI management is deferred.
-Only then connect a real backend to admission, durable ownership, reconciliation
-and artifact custody. No native fallback is allowed when VM execution is selected.
+The remaining work is broader qualification: repeated lifecycle/version cycles,
+crash and resource-failure injection, full workload compatibility, capacity and
+performance budgets. The managed path uses Virtualization.framework directly;
+OCI management is deferred. No native fallback is allowed when VM execution is selected.
 
 Model calls, conversations, planning and multi-agent coordination belong to
-consumers. GPU/GUI guests, live memory snapshots and other host platforms are
-outside the first delivery scope.
+consumers. GPU/GUI guests and other host platforms are outside the first delivery
+scope. Runtime memory snapshots now have experimental real-VM support but are not
+yet covered by all v0.1 qualification gates.
 
 ## License
 
@@ -82,8 +84,8 @@ dependencies retain their own licenses; they are not relicensed by Cocoon.
 ## Native agent microVM direction
 
 See the [implementation plan and current delivery status](docs/implementation-plan.md).
-The trusted host CLI now supports persistent image and VM registration; VM execution
-remains unavailable through this CLI.
+The trusted host CLI supports registration and real lifecycle operations; the
+private socket service additionally exposes authenticated agent operations.
 
 [Rust-first workspace architecture and contribution workflow](docs/architecture.md) · [Contributing](CONTRIBUTING.md)
 

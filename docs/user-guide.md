@@ -7,27 +7,22 @@ English (authoritative) · [简体中文](user-guide.zh-CN.md)
 ## 1. What you can use today
 
 Cocoon is an experimental, Rust-first, headless microVM project for Apple Silicon
-macOS. It currently provides trusted-host image import, persistent VM registration,
-task-schema validation and a fixed Rust guest persistence experiment.
+macOS. It provides trusted-host image import, persistent VM registration, real
+start/stop/reconcile, an authenticated private Unix-socket API, guest exec/file
+operations, binary artifact export, suspend/resume, approved cold recovery,
+candidate approval, branch and rollback operations, and automatic host-protection
+suspension.
 
-The experiment boots an ext4 root disk, writes a payload, confirms host stop and
-boots again to verify that payload and permissions. Ten write/read cycles have
-passed on the development host. This is not a general-purpose Linux shell or an
-agent execution service. `vm start` intentionally reports execution unavailable.
-The M5 / 16 GB capacity and latency figures in the specification are future
-acceptance targets, not current supported capacity.
+The combined real-VM acceptance passes these operations on a pinned minimal
+BusyBox/glibc userland built from Debian inputs. It is not a complete Debian
+development distribution, a public network service, or a credential system for
+untrusted host users. The same macOS account remains trusted. Capacity, latency,
+destroy/cleanup, broad workload compatibility and full v0.1 fault qualification
+remain open.
 
-There is no public socket API, grant command, general exec/file API, automatic
-reconciliation, destroy command or automatic rollback/branch execution yet.
-`retain`, `rollback` and `branch` are accepted stored policies; only the fixed
-experiment has demonstrated retention. CLI access is trusted host authority,
-not a credential-scoped interface for untrusted agents.
-
-
-The [offline project experiment](../experiments/microvm/PROJECT.md) additionally
-provides a minimal BusyBox shell and experimental Rust vsock read/write/exec
-helper. Three real project boots passed. Follow its separate build/run instructions;
-public agent admission and general project inputs remain unavailable.
+The [offline project experiment](../experiments/microvm/PROJECT.md) and fixed
+persistence fixture remain separate acceptance paths. Use the managed acceptance
+below for the current agent workflow.
 
 ## 2. Prerequisites and build
 
@@ -147,7 +142,9 @@ The complete command reference is:
 | `vm create VM_UUID IMAGE_UUID OWNER POLICY` | Create an independent work disk and registration. |
 | `vm list` / `vm show VM_UUID` | Read records, not live VM reconciliation. |
 | `operations` | Inspect import/create intents and completion; per-boot records are separate. |
-| `vm start VM_UUID` | Explicit unavailable error; no fallback execution. |
+| `vm start VM_UUID RUNNER` | Start a real managed VM with the explicit signed runner; return attempt/generation/lease. |
+| `vm stop VM_UUID` / `vm reconcile VM_UUID` | Request confirmed stop or reconcile retained observations. |
+| `serve RUNNER` | Serve the authenticated private host socket with a fixed runner. |
 | `experiment persistence VM_UUID RUNNER write\|read PAYLOAD` | One bounded fixture boot; RUNNER is an absolute ARM64 Mach-O path, PAYLOAD is 32 hexadecimal characters. |
 
 For the last command, use the generated fixture, the signed `cocoon-vz` runner and
@@ -167,8 +164,8 @@ stdout. Capture both and check the exit status.
 | Missing compiler target/tool, wrong tool identity | Install the declared target/tools or explicitly select the executable; do not substitute Android SDK tools through PATH. |
 | Kernel/module digest mismatch | Keep the original file; review source/version changes. Do not disable checks or overwrite operator files. |
 | `doctor` reports EPERM or framework unsupported | Distinguish sandbox denial from hardware support. Use an appropriately authorized macOS terminal for real tests; do not use native fallback. |
-| Unknown VM state / reconciliation required | Preserve the original VM/boot records, runner observations and disk. Automatic recovery is not implemented; do not clear state or reuse the disk to force a retry. |
-| `vm start` unavailable | Expected for the current release; use only the documented fixed experiment. |
+| Unknown VM state / reconciliation required | Preserve original records, observations and disk; run reconcile. Never clear state or reuse a disk to force a retry. |
+| Snapshot recovery required | Review the failed snapshot and explicitly approve cold recovery from the persistent working disk; automatic cold recovery is not attempted. |
 
 Stopping does not mean deleting. There is no supported automatic uninstall/VM
 cleanup command yet. Before manually removing any private state or build data,
@@ -176,3 +173,24 @@ establish that no VM or process still owns it and retain any required evidence.
 Never use deletion as reconciliation. Read-only queries do not grant cleanup
 permission. Keep working disks and private reports out of commits and support
 attachments; share sanitized summaries instead.
+
+## 7. Managed agent acceptance
+
+Build the helper-enabled fixture and run the combined real-VM path:
+
+```sh
+python3 experiments/microvm/root_modules.py --project
+python3 experiments/microvm/build_root.py --project
+python3 experiments/microvm/probe.py build
+cargo build --offline --release -p cocoon
+python3 experiments/microvm/production_acceptance.py \
+  --fixture /absolute/private/root-BUILD_ID \
+  --kernel /absolute/private/linux --automatic-suspend
+```
+
+Add `--corrupt-before-resume` to exercise real snapshot corruption, explicit cold
+recovery approval, and subsequent automatic suspension. The harness creates a
+private state directory, starts the socket service, writes and executes guest
+content, exports and byte-checks a 12,000-byte artifact, suspends/resumes with new
+identity, saves/promotes a candidate, boots a branch, stops it, and rolls back the
+original VM. It does not publish credentials or raw reports.

@@ -7,21 +7,17 @@
 ## 1. 当前可以使用什么
 
 Cocoon 是面向 Apple Silicon macOS、Rust 优先的实验性无头 microVM 项目。当前提供
-可信宿主镜像导入、持久化 VM 注册、任务格式校验和固定 Rust guest 持久化实验。
+可信宿主镜像导入、持久化 VM 注册、真实启动/停止/核对、经认证的私有 Unix socket
+API、guest 执行/文件操作、二进制产物导出、挂起/恢复、经批准的冷恢复、候选批准、
+分支、回滚和主动宿主保护挂起。
 
-实验从 ext4 根磁盘启动，写入内容、由宿主确认停止，再次启动验证内容和权限。
-开发机上已通过十轮写入/读回。这不是通用 Linux shell 或 agent 执行服务；
-`vm start` 会明确报告执行不可用。规范里的 M5 / 16 GB 容量与延迟是未来验收目标，
-不是当前支持能力。
+组合真实 VM 验收已在由 Debian 输入构建的最小 BusyBox/glibc 用户空间上通过这些操作。
+它不是完整 Debian 开发发行版、公开网络服务或防御不可信宿主用户的凭据系统；当前仍
+信任同一 macOS 账户。容量、延迟、销毁/清理、广泛工作负载兼容性和完整 v0.1 故障
+资格仍待完成。
 
-目前没有公开 socket API、授权命令、通用 exec/file API、自动核对、销毁命令或
-自动回滚/分支。`retain`、`rollback`、`branch` 可以作为策略存储，只有固定实验
-验证了保留。CLI 拥有可信宿主权限，不是供不可信 agent 使用的凭据限权接口。
-
-
-[离线项目实验](../experiments/microvm/PROJECT.zh-CN.md) 额外提供最小 BusyBox shell
-及实验性 Rust vsock 读/写/执行 helper，已通过三次真实项目启动。构建与运行请遵循
-其独立说明；公开 agent 准入及通用项目输入仍不可用。
+[离线项目实验](../experiments/microvm/PROJECT.zh-CN.md) 和固定持久化 fixture 仍是
+独立验收路径。当前 agent 工作流使用下面的管理链路验收。
 
 ## 2. 环境与构建
 
@@ -131,7 +127,9 @@ target/release/cocoon host "$COCOON_STATE" operations
 | `vm create VM_UUID IMAGE_UUID OWNER POLICY` | 创建独立工作磁盘与注册记录。 |
 | `vm list` / `vm show VM_UUID` | 查询记录，不是实时 VM 核对。 |
 | `operations` | 查询导入/创建意图及完成状态；启动记录另行保存。 |
-| `vm start VM_UUID` | 明确返回不可用，不回退执行。 |
+| `vm start VM_UUID RUNNER` | 用显式签名 runner 启动真实管理 VM，返回 attempt/generation/lease。 |
+| `vm stop VM_UUID` / `vm reconcile VM_UUID` | 请求确认停止或核对保留观测。 |
+| `serve RUNNER` | 用固定 runner 启动经认证的私有宿主 socket 服务。 |
 | `experiment persistence VM_UUID RUNNER write\|read PAYLOAD` | 一次有界 fixture 启动；RUNNER 须为 ARM64 Mach-O 绝对路径，PAYLOAD 为 32 个十六进制字符。 |
 
 最后一条命令须使用构建好的 fixture、签名后的 `cocoon-vz`，写入/读回使用相同
@@ -149,9 +147,28 @@ fixture 也可能在 stdout 输出 JSON 报告，应同时保留并检查退出�
 | 缺 target/工具、工具身份错误 | 安装指定 target/工具或显式选择可执行文件，不通过 PATH 偷换为 Android SDK 工具。 |
 | 内核/模块摘要不符 | 保留原文件，审阅来源和版本变化，不关闭校验或覆盖操作员文件。 |
 | `doctor` 返回 EPERM 或框架不支持 | 区分沙箱拒绝与硬件不支持；在获得授权的 macOS 终端运行真实测试，不改为原生执行。 |
-| VM 未知状态、要求 reconciliation | 保留原 VM/启动记录、runner 观测和磁盘。尚无自动恢复，不清记录或复用磁盘强行重试。 |
-| `vm start` 不可用 | 当前版本的预期行为，只使用文档明确列出的固定实验。 |
+| VM 未知状态、要求 reconciliation | 保留原 VM/启动记录、runner 观测和磁盘，执行核对；不清记录或复用磁盘强行重试。 |
+| 快照要求 recovery_required | 审阅失败快照，显式批准从持久工作磁盘冷恢复；不自动冷恢复。 |
 
 停止不等于删除。目前没有受支持的自动卸载/VM 清理命令。手动移除私有状态或构建
 产物前，必须确认没有 VM/进程仍占有它们，并保留必要证据。不能用删除代替核对；
 只读查询不授予清理权限。工作磁盘和私有报告不进入提交或支持附件，只分享脱敏摘要。
+
+## 7. 管理链路 agent 验收
+
+构建包含 helper 的 fixture 并运行组合真实 VM 链路：
+
+```sh
+python3 experiments/microvm/root_modules.py --project
+python3 experiments/microvm/build_root.py --project
+python3 experiments/microvm/probe.py build
+cargo build --offline --release -p cocoon
+python3 experiments/microvm/production_acceptance.py \
+  --fixture /absolute/private/root-BUILD_ID \
+  --kernel /absolute/private/linux --automatic-suspend
+```
+
+加入 `--corrupt-before-resume` 可实际损坏快照，验证显式冷恢复批准及之后的主动挂起。
+工具创建私有状态目录、启动 socket 服务、写入并执行 guest 内容、导出并逐字节检查
+12,000 字节产物、以新身份挂起/恢复、保存并批准候选、启动分支、停止分支并回滚原 VM。
+不会发布凭据或原始报告。

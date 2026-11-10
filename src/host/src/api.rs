@@ -51,6 +51,15 @@ pub enum HostOperation {
         vm: VmId,
         owner: String,
     },
+    Protect,
+    ProtectionStatus,
+    SetProtection {
+        policy: crate::ProtectionPolicy,
+    },
+    SetPriority {
+        vm: VmId,
+        priority: i32,
+    },
     Guest {
         request: cocoon_guest_wire::Request,
     },
@@ -153,6 +162,18 @@ impl Manager {
                 HostOperation::Branch { source, vm, owner } => {
                     Ok(serde_json::to_value(self.branch(source, vm, &owner)?)?)
                 }
+                HostOperation::Protect => Ok(self.protect()?),
+                HostOperation::ProtectionStatus => {
+                    Ok(serde_json::to_value(self.protection_policy()?)?)
+                }
+                HostOperation::SetProtection { policy } => {
+                    self.set_protection_policy(policy)?;
+                    Ok(serde_json::Value::Null)
+                }
+                HostOperation::SetPriority { vm, priority } => {
+                    self.set_priority(vm, priority)?;
+                    Ok(serde_json::Value::Null)
+                }
                 HostOperation::Guest { request: mut guest } => {
                     guest.identity.caller = request.caller.clone();
                     Ok(serde_json::to_value(self.guest(guest)?)?)
@@ -194,8 +215,24 @@ impl Manager {
         let path = self.api_socket_path();
         let listener = UnixListener::bind(&path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        listener.set_nonblocking(true)?;
+        let mut last_protection = std::time::Instant::now() - std::time::Duration::from_secs(1);
         for stream in listener.incoming() {
-            let mut stream = stream?;
+            let mut stream = match stream {
+                Ok(stream) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if last_protection.elapsed() >= std::time::Duration::from_secs(1) {
+                        if let Err(error) = self.protect() {
+                            eprintln!("cocoon protection: {error}");
+                        }
+                        last_protection = std::time::Instant::now();
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            stream.set_nonblocking(false)?;
             let request = receive::<HostRequest>(&mut stream);
             match request {
                 Ok(request) => {

@@ -228,3 +228,15 @@ samples on macOS 27.0.1 (26A434), with random RAM-nonce and counter continuity,
 matching disk digests at restore admission, and confirmed termination. This is platform feasibility evidence,
 not v0.1 lifecycle, recovery, isolation, capacity, or performance qualification.
 The current exclusion of runtime memory snapshots remains in force.
+
+### Managed-path evidence
+
+The managed real-VM path has passed a combined scenario covering authenticated
+socket start, binary guest writes and execution, 12,000-byte artifact export,
+confirmed suspend and process exit, resume with a new generation, candidate
+approval, booting an independent branch, rollback, and policy-triggered automatic
+suspension. A second combined run additionally corrupted the real snapshot,
+required recovery approval, cold-recovered the persistent working disk, and then
+passed automatic suspension and subsequent operations. These results establish
+the exercised functions only; they do not close the remaining v0.1 capacity,
+performance, cleanup, broad workload, or full fault-injection gates.

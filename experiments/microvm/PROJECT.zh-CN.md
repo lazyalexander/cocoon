@@ -29,7 +29,8 @@ python3 experiments/microvm/project.py --fixture /absolute/private/root-BUILD_ID
 cocoon host ABSOLUTE_PRIVATE_STATE_DIR experiment project VM_UUID ABSOLUTE_SIGNED_RUNNER
 ```
 
-`vm start` 仍不可用。不要给项目实验传入仅支持持久化的 fixture。
+固定项目实验使用 `experiment project`，不要传入仅支持持久化的 fixture；正式管理链路的
+`vm start` 是独立入口。
 下载内容、生成镜像和报告都留在本地忽略目录。完整内核包仅用于构建，镜像只含选定模块。
 
 ## 验证内容
@@ -77,10 +78,9 @@ helper 以 guest root 运行，可以按 Linux 文件系统规则写 guest 文�
 基础镜像完整性。这是功能证据，不是 M5 容量或延迟资格。最终源码还执行 workspace
 测试/lint、Linux ARM64 helper 交叉 lint 和原生协议测试；这些检查单独不能证明 VM 执行。
 
-仍未实现：完整 Debian 用户态、Git/语言工具链、任意项目准入与导入清单、外部 agent
-socket/授权、二进制或大文件传输、流式输出、按请求 ID 取消、通用产物选择、自动核对、
-回滚/分支执行以及并发资格。已验证保留；rollback/branch 仍仅存储策略。
-下一里程碑是宿主授权的项目输入与面向外部 agent 的会话，同时保持生命周期边界。
+固定实验仍缺完整 Debian 工具链、任意项目清单、流式输出和按请求 ID 取消。管理链路
+另行提供认证 socket、二进制/chunk 产物传输、核对及可执行回滚/分支。参见管理链路
+验收说明。两条路径都不宣称并发或完整 v0.1 资格。
 
 ## 第三方来源
 

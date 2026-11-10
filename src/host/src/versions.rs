@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 impl Manager {
     pub fn save_candidate(&self, id: VmId) -> Result<ImageId> {
+        let _lease = crate::lifecycle::working_disk_lease(self, id)?;
         let vm = self.get(id)?;
         if !matches!(vm.state, VmState::Stopped | VmState::Suspended) || vm.active_lease.is_some() {
             return Err("candidate requires an inactive VM".into());
@@ -62,6 +63,7 @@ impl Manager {
     }
 
     pub fn rollback(&self, id: VmId, baseline: ImageId) -> Result<()> {
+        let _lease = crate::lifecycle::working_disk_lease(self, id)?;
         let mut vm = self.get(id)?;
         if !matches!(vm.state, VmState::Stopped | VmState::Suspended) || vm.active_lease.is_some() {
             return Err("rollback requires an inactive VM".into());

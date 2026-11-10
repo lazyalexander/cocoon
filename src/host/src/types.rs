@@ -116,6 +116,10 @@ pub enum FinishPolicy {
     Branch,
 }
 
+fn default_priority() -> i32 {
+    100
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Vm {
@@ -127,6 +131,8 @@ pub struct Vm {
     pub network: bool,
     pub vcpus: u8,
     pub memory_mib: u32,
+    #[serde(default = "default_priority")]
+    pub priority: i32,
     #[serde(default)]
     pub generation: u64,
     #[serde(default)]

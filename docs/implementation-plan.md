@@ -36,7 +36,8 @@ Immutable images contain pinned kernel, initramfs and root disk with provenance.
 Independent writable disks use APFS cloning where available, otherwise an
 explicit full-copy path. Default to retain; configured rollback recreates from
 baseline; branch publishes a new untrusted derived image only after confirmed
-stop. Task completion is a host action, not a guest marker. No live snapshots.
+stop. Task completion is a host action, not a guest marker. Runtime snapshots use
+single-authority restore and remain subject to the acceptance gates below.
 Defaults: 1 vCPU, 512 MiB RAM, 8 GiB sparse disk, subject to real acceptance.
 Count framework helper memory when measuring total overhead. Do not equate vCPU
 count with CPU time quotas or benchmark results with Firecracker equivalence.
@@ -49,8 +50,8 @@ idempotent registration by caller-selected VM UUID, and pending operation
 inspection. Disk copying now prefers APFS clones and otherwise preserves sparse allocation;
 copy metadata records logical and allocated bytes. Prepared VM defaults are 1 vCPU, 512 MiB and no networking.
 
-`retain`, `rollback` and `branch` are stored policies only; their execution is not
-implemented. Inputs are not validated as bootable Debian images. Image import
+Candidate save, approval, rollback and branch are executable host operations.
+Inputs are not automatically certified as bootable Debian images. Image import
 requires caller-supplied provenance; it does not authenticate the publisher.
 
 The trusted host CLI is available as:
@@ -64,17 +65,17 @@ cocoon host ABSOLUTE_PRIVATE_STATE_DIR vm show VM_UUID
 cocoon host ABSOLUTE_PRIVATE_STATE_DIR operations
 ```
 
-The state directory must be private (0700). This CLI is for trusted operators,
-not an authorized agent endpoint. The same macOS user can bypass file permissions;
-these copies are not tamper-proof against that user. Failed operations remain
-pending for inspection; automated reconciliation is not implemented.
+The state directory must be private (0700). Direct CLI access is trusted host
+authority. The same macOS user can bypass file permissions; these copies are not
+tamper-proof against that user. Failed operations remain pending for inspection,
+and `vm reconcile` performs explicit observation reconciliation.
 
-`vm start VM_UUID` deliberately returns execution unavailable without launching a
-host process or VM. Local socket service, grants, production leases/recovery, general guest helper
-and production runner integration remain outstanding. A separate fixed Rust
-persistent-root experiment adds an image builder, per-boot records and bounded
-supervision; see its dedicated documentation. The public start command remains
-unavailable. Existing diskless experiments remain separate.
+The managed path now provides real start/stop, an authenticated private socket,
+attempt/generation/lease authority, general guest file/exec operations, binary
+artifact export, checkpoint suspend/resume, approved cold recovery and automatic
+host protection. The runner has a bounded wall deadline; destroy/cleanup, complete
+capacity and all v0.1 fault gates remain open. Existing fixed experiments remain
+separate acceptance evidence.
 
 Before committing: Rust tests, Clippy with warnings denied, formatting checks,
 Python harness tests and native protocol checks. Real macOS execution is required

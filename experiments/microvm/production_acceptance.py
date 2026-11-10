@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--fixture", required=True, type=pathlib.Path)
     parser.add_argument("--kernel", required=True, type=pathlib.Path)
     parser.add_argument("--corrupt-before-resume", action="store_true")
+    parser.add_argument("--automatic-suspend", action="store_true")
     args = parser.parse_args()
     fixture = args.fixture.resolve(strict=True)
     kernel = args.kernel.resolve(strict=True)
@@ -47,6 +48,7 @@ def main():
     else:
         raise TimeoutError("host API socket readiness")
     authority = None
+    branch = None
 
     def api(operation):
         request_path = state / (uuid.uuid4().hex + ".json")
@@ -108,6 +110,19 @@ def main():
             "kind": "exec", "argv": ["/bin/sh", "-c", "test -s data.bin && printf RESUME_PASS"],
             "cwd": "/workspace"}}})
         assert resumed["result"]["Ok"]["stdout"] == "RESUME_PASS"
+        if args.automatic_suspend:
+            api({"operation": "set_protection", "policy": {"enabled": True,
+                "minimum_free_percent": 100, "emergency_stop": True, "max_suspend_per_pass": 1}})
+            for _ in range(300):
+                current = api({"operation": "show", "vm": vm})
+                if current["state"] == "suspended":
+                    break
+                time.sleep(0.05)
+            else:
+                raise TimeoutError("automatic suspension")
+            api({"operation": "set_protection", "policy": {"enabled": True,
+                "minimum_free_percent": 1, "emergency_stop": True, "max_suspend_per_pass": 1}})
+            authority = api({"operation": "resume", "vm": vm})
         artifact = api({"operation": "export", "request": {"identity": identity(), "operation": {
             "kind": "read", "path": "/workspace/data.bin"}},
             "guest_path": "/workspace/data.bin", "name": "artifact.bin"})
@@ -132,16 +147,17 @@ def main():
         summary = {"schema": "cocoon-production-acceptance-v1", "passed": True,
                    "binary_bytes": len(expected), "artifact_sha256": artifact["sha256"],
                    "generation": authority["generation"], "resumed": True,
-                   "cold_recovery": args.corrupt_before_resume, "branch": True,
+                   "cold_recovery": args.corrupt_before_resume, "automatic_suspend": args.automatic_suspend,
+                   "branch": True,
                    "rollback": True, "state": stopped["state"]}
     except BaseException as error:
-        try:
-            if authority is not None:
-                current = api({"operation": "show", "vm": vm})
+        for target in {vm, branch} - {None}:
+            try:
+                current = api({"operation": "show", "vm": target})
                 if current["state"] == "running":
-                    api({"operation": "stop", "vm": vm})
-        except BaseException:
-            pass
+                    api({"operation": "stop", "vm": target})
+            except BaseException:
+                pass
         (state / "failure.txt").write_text(str(error) + "\n")
         raise
     finally:

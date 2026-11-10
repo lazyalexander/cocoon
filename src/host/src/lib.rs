@@ -24,6 +24,7 @@ mod journal;
 mod lifecycle;
 pub mod persistence;
 mod project;
+mod protection;
 mod types;
 mod versions;
 pub use api::{HostOperation, HostRequest, HostResponse};
@@ -31,6 +32,7 @@ use disk::{copy_new, hash, sync_directory};
 pub use error::{Error, Result};
 pub use journal::JournalEntry;
 pub use lifecycle::ExecutionRecord;
+pub use protection::ProtectionPolicy;
 pub use types::*;
 /// Only trusted host code may construct this interface. Socket ACLs are not
 /// isolation from arbitrary code running under the same macOS user.
@@ -227,6 +229,7 @@ impl Manager {
             network: false,
             vcpus: 1,
             memory_mib: 512,
+            priority: 100,
             generation: 0,
             active_attempt: None,
             active_lease: None,

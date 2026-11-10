@@ -8,9 +8,10 @@ Cocoon 是面向智能体工作负载设计的独立执行运行时项目。首�
 Apple Silicon macOS 上无头运行 Linux ARM64。an-agent 是预期的首个使用者，
 不属于运行时依赖。
 
-**当前状态：持久化宿主注册、真实无磁盘与 ext4 根磁盘 VM 验收，以及离线 Rust/vsock
-shell 项目实验。三次项目启动通过代码修改、执行和产物接收。生产 agent 准入、
-恢复和完整 Debian 后端仍未通过资格验收。**
+**当前状态：真实管理链路已支持启动/停止、经认证的私有 Unix socket 控制、guest
+文件/命令操作、二进制产物导出、跨进程挂起/恢复、经批准的冷恢复、候选版本、分支、
+回滚和策略驱动的主动挂起。组合真实 VM 验收已通过。这仍不等于完成 v0.1 资格、
+对抗性隔离、容量验收或完整 Debian 工具链。**
 
 ## 模型
 
@@ -57,14 +58,13 @@ cargo run --offline -- plan examples/task.json
 
 ## 下一阶段验收
 
-固定 Rust ext4 根磁盘 fixture 已通过十轮持久化。下一步加入 Debian 用户空间和
-生产 guest helper／控制链路；固定工作负载验收不证明这些能力可用。
-继续使用 Virtualization.framework；OCI 管理延后。
-通过这些验收后，再接入真实准入、持久监督、故障对账与产物保管机制。
-选择 VM 执行后，不允许自动退回宿主原生执行。
+剩余工作是更广泛的资格验收：重复生命周期/版本循环、崩溃与资源故障注入、完整
+工作负载兼容性、容量及性能预算。管理链路继续使用 Virtualization.framework；
+OCI 管理延后。选择 VM 执行后，不允许自动退回宿主原生执行。
 
 模型调用、对话、规划和多智能体协调由使用方负责。
-GPU、GUI guest、实时内存快照及其他宿主平台不属于首阶段交付范围。
+GPU、GUI guest 及其他宿主平台不属于首阶段交付范围。运行中内存快照已有真实实验
+支持，但尚未覆盖全部 v0.1 资格门槛。
 
 ## 协议
 
@@ -73,8 +73,8 @@ Cocoon 原创源码与文档采用 [MIT 协议](LICENSE)。用户提供的 Linux
 
 ## 原生 agent microVM 方向
 
-参见[实施计划与当前交付状态](docs/implementation-plan.zh-CN.md)。可信宿主 CLI 已支持
-持久化镜像和 VM 注册；该 CLI 尚不能执行 VM。
+参见[实施计划与当前交付状态](docs/implementation-plan.zh-CN.md)。可信宿主 CLI 支持
+注册与真实生命周期操作，私有 socket 服务另提供经认证的 agent 操作。
 
 [Rust 优先 workspace 架构与贡献流程](docs/architecture.zh-CN.md) · [Contributing](CONTRIBUTING.zh-CN.md)
 

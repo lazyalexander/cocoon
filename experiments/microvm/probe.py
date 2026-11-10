@@ -258,10 +258,24 @@ def benchmark(args):
     return 0 if summary["complete"] else 2
 
 
+def snapshot_api():
+    result = subprocess.run(
+        ["/usr/bin/swiftc", "-swift-version", "5", "-typecheck",
+         str(ROOT / "snapshot_api_probe.swift"), "-framework", "Virtualization"],
+        capture_output=True, text=True, timeout=60)
+    report = {"schema": "cocoon-snapshot-api-probe-v1",
+              "api_available": result.returncode == 0,
+              "compile_error": "" if result.returncode == 0 else result.stderr[-16384:],
+              "guest_boot_tested": False}
+    print(json.dumps(report, indent=2))
+    return 0 if result.returncode == 0 else 2
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor")
+    commands.add_parser("snapshot-api")
     kernel_parser = commands.add_parser("check-kernel")
     kernel_parser.add_argument("--kernel", required=True, type=pathlib.Path)
     compile_parser = commands.add_parser("build")
@@ -281,6 +295,8 @@ def main():
         return 2 if report["compatibility"] == "incompatible" else 0
     if args.command == "doctor":
         return doctor()
+    if args.command == "snapshot-api":
+        return snapshot_api()
     if args.command == "build":
         build(args.linker)
         return 0

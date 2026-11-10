@@ -45,6 +45,11 @@ freestanding ARM64 Linux init and an optimized native framework runner with no
 OCI package dependency. It includes input/output, deadline-stop acceptance and
 a repeated-boot benchmark harness. All guest acceptance is still pending.
 
+The kernel-free `doctor` command records capability-read errors separately from
+hardware support. Native runner protocol checks run on macOS CI without booting
+a guest. Cancellation and bounded serial handling remain experimental until real
+VM acceptance succeeds.
+
 The earlier empty-context probe remains under `experiments/macos-preflight/`.
 Neither experiment depends on an-agent or starts existing Docker/Lima machines.
 

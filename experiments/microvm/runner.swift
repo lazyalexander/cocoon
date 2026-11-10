@@ -11,11 +11,31 @@ struct Request: Decodable {
     let seconds: Double
 }
 
+func hostDiagnostics() -> [String: Any] {
+    var probes: [String: Any] = [:]
+    for name in ["kern.hv_support", "hw.optional.arm64"] {
+        var value: Int32 = 0
+        var length = MemoryLayout<Int32>.size
+        let result = sysctlbyname(name, &value, &length, nil, 0)
+        let savedErrno = errno
+        if result == 0 {
+            probes[name] = ["readable": true, "value": value]
+        } else {
+            probes[name] = ["readable": false, "errno": savedErrno,
+                            "message": String(cString: strerror(savedErrno))]
+        }
+    }
+    return ["framework_supported": VZVirtualMachine.isSupported, "sysctl": probes,
+            "os": ProcessInfo.processInfo.operatingSystemVersionString]
+}
+
 final class Runner: NSObject, VZVirtualMachineDelegate {
     let queue = DispatchQueue(label: "cocoon.vm")
     let serial = Pipe()
     let origin = DispatchTime.now().uptimeNanoseconds
     var vm: VZVirtualMachine?
+    var serialSource: DispatchSourceRead?
+    var signalSources: [DispatchSourceSignal] = []
     var request: Request?
     var bytes = Data()
     var stopping = false
@@ -33,7 +53,8 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
     func finish(_ status: String, _ code: Int32) {
         guard !finished else { return }
         finished = true
-        serial.fileHandleForReading.readabilityHandler = nil
+        serialSource?.cancel()
+        signalSources.forEach { $0.cancel() }
         report["status"] = status
         report["runner_elapsed_ms"] = elapsed()
         report["serial_base64"] = bytes.base64EncodedString()
@@ -45,6 +66,47 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write(Data("\n".utf8))
         exit(code)
+    }
+
+    func installCancellation() {
+        // Applies only to this runner process. All control stays on the VM queue.
+        for number in [SIGINT, SIGTERM] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: queue)
+            source.setEventHandler { self.stop("signal") }
+            signalSources.append(source)
+            source.resume()
+        }
+    }
+
+    func installSerialReader() -> Bool {
+        let descriptor = serial.fileHandleForReading.fileDescriptor
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            report["error"] = "cannot configure bounded serial reader"
+            finish("setup_failed", 2)
+            return false
+        }
+        // Read on the VM queue rather than enqueueing unbounded callback data.
+        let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
+        source.setEventHandler {
+            guard !self.finished else { return }
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = chunk.withUnsafeMutableBytes {
+                Darwin.read(descriptor, $0.baseAddress, $0.count)
+            }
+            if count > 0 {
+                self.receive(Data(chunk.prefix(count)))
+            } else if count == 0 {
+                source.cancel()
+            } else if errno != EAGAIN && errno != EINTR {
+                self.report["serial_error"] = String(cString: strerror(errno))
+                self.stop("serial_error")
+            }
+        }
+        serialSource = source
+        source.resume()
+        return true
     }
 
     func begin(_ req: Request) {
@@ -67,17 +129,15 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         do { try config.validate() } catch {
             let e = error as NSError
             report["error"] = ["domain": e.domain, "code": e.code, "message": e.localizedDescription]
+            report["diagnostics"] = hostDiagnostics()
             finish("blocked", 2)
             return
         }
+        guard installSerialReader() else { return }
         let machine = VZVirtualMachine(configuration: config, queue: queue)
         vm = machine
         machine.delegate = self
-        serial.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            self?.queue.async { self?.receive(data) }
-        }
+        installCancellation()
         report["start_requested_ms"] = elapsed()
         queue.asyncAfter(deadline: .now() + req.seconds) { self.stop("deadline") }
         machine.start { result in
@@ -95,6 +155,8 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
 
     func receive(_ data: Data) {
         guard !finished else { return }
+        // Drain without retaining further bytes once shutdown is underway.
+        guard !stopping else { return }
         guard bytes.count + data.count <= 65536 else { stop("serial_limit"); return }
         bytes.append(data)
         guard let req = request else { return }
@@ -103,7 +165,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             report["guest_ready"] = true
             report["guest_ready_ms"] = elapsed()
         }
-        if text.contains("COCOON_DONE:" + req.token + "\n") {
+        if report["guest_done"] as? Bool != true && text.contains("COCOON_DONE:" + req.token + "\n") {
             report["guest_done"] = true
             report["guest_done_ms"] = elapsed()
             stop("guest_done")
@@ -147,12 +209,23 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
 
 let runner = Runner()
 do {
+    if CommandLine.arguments == [CommandLine.arguments[0], "--doctor"] {
+        runner.report["schema"] = "cocoon-vz-doctor-v1"
+        runner.report["diagnostics"] = hostDiagnostics()
+        runner.report["guest_boot_tested"] = false
+        runner.finish("diagnostic_only", VZVirtualMachine.isSupported ? 0 : 2)
+    }
     guard CommandLine.arguments.count == 2 else { throw NSError(domain: "usage: cocoon-vz REQUEST.json", code: 1) }
     let url = URL(fileURLWithPath: CommandLine.arguments[1])
     let handle = try FileHandle(forReadingFrom: url)
     let data = try handle.read(upToCount: 16385) ?? Data()
     try handle.close()
     guard data.count <= 16384 else { throw NSError(domain: "request too large", code: 1) }
+    let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    let allowed = Set(["kernel", "initrd", "token", "memoryMiB", "seconds"])
+    guard let fields = fields, Set(fields.keys) == allowed else {
+        throw NSError(domain: "unknown or missing request fields", code: 1)
+    }
     let req = try JSONDecoder().decode(Request.self, from: data)
     guard req.token.count == 32, req.token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
           (128...4096).contains(req.memoryMiB), (1...60).contains(req.seconds) else {

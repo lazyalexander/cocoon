@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import probe
-from probe import cpio, check_elf
+from probe import cpio, check_elf, run_guest
 
 
 def unpack(archive):
@@ -33,6 +33,31 @@ def unpack(archive):
 
 
 class GuestImageTests(unittest.TestCase):
+    def test_harness_delivers_cancellation_to_its_owned_process(self):
+        # Exercises local process signaling only; this is not VM acceptance.
+        with tempfile.TemporaryDirectory() as directory:
+            child = pathlib.Path(directory) / "child.py"
+            child.write_text(
+                "#!/usr/bin/env python3\nimport signal, time, sys\n"
+                "def stop(*_):\n    print('stopped', flush=True)\n    sys.exit(0)\n"
+                "signal.signal(signal.SIGTERM, stop)\nprint('ready', flush=True)\n"
+                "while True: time.sleep(0.01)\n"
+            )
+            child.chmod(0o700)
+            result = run_guest(child, pathlib.Path(directory) / "unused", 2, True)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b"ready\nstopped\n")
+
+    def test_harness_timeout_reaps_runner_without_turning_loss_into_success(self):
+        timeout = probe.subprocess.TimeoutExpired(["runner"], 16)
+        with patch.object(probe.subprocess, "Popen") as spawn:
+            process = spawn.return_value.__enter__.return_value
+            process.communicate.side_effect = [timeout, (b"", b"")]
+            with self.assertRaises(probe.subprocess.TimeoutExpired):
+                run_guest("runner", "request", 1, False)
+            process.kill.assert_called_once_with()
+            self.assertEqual(process.communicate.call_count, 2)
+
     def test_archive_preserves_input_modes_devices_and_alignment(self):
         entries = [
             ("dev", stat.S_IFDIR | 0o755, b"", 0, 0),

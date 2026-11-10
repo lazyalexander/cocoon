@@ -20,9 +20,12 @@ No package installation or download is performed by these commands.
 
 ```sh
 python3 experiments/microvm/probe.py build
+python3 experiments/microvm/probe.py doctor
+python3 experiments/microvm/runner_checks.py experiments/microvm/build/cocoon-vz
 python3 -m unittest discover -s experiments/microvm -p 'test_*.py' -v
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case roundtrip
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case deadline --seconds 2
+python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case cancel --seconds 10
 python3 experiments/microvm/probe.py benchmark --kernel /absolute/path/to/Image --samples 30
 ```
 
@@ -47,11 +50,23 @@ marker. The host must stop it after the selected deadline. Both cases require a
 successful framework stop callback and stopped state (or an observed guest stop).
 A readiness marker is workload evidence, not termination evidence or a grant.
 
+The `cancel` case uses the waiting guest and sends SIGTERM to the owned runner
+after two seconds (or half the deadline if shorter). The runner handles SIGTERM
+and SIGINT on its VM queue, requests a framework stop and must still confirm
+termination. A signal arriving before guest readiness does not pass acceptance.
+Serial reads are nonblocking, at most 4 KiB per event, and processed on the VM
+queue; guest output does not accumulate in a separate callback queue. Further
+output is drained without retention once stopping begins.
+
 Serial capture is capped at 64 KiB. The runner has a 5-second stop watchdog;
 the Python harness adds a final process timeout. Watchdog expiry is recorded as
 unconfirmed termination, never a pass or an automatic retry. There is no durable
 supervisor, crash reconciliation, caller authentication or production resource
 accounting in this experiment.
+
+The harness kills and reaps its local runner after an outer timeout or an
+interruption, while preserving unknown VM termination. This is local cleanup,
+not a substitute for a durable independent supervisor or VM reconciliation.
 
 The requested initial VM size is 1 vCPU and 128 MiB. Validation may refuse it;
 only a real successful boot establishes support. No environment checks are
@@ -79,6 +94,18 @@ boot cases currently stop at configuration validation with `VZErrorDomain` code 
 in the managed execution context. Linux startup, roundtrip and deadline-stop
 acceptance remain unqualified. The earlier Hypervisor context probe succeeded,
 so the framework refusal needs diagnosis in the actual host environment.
+
+`doctor` requires no kernel and never creates a VM. It records framework
+availability and whether `kern.hv_support` and `hw.optional.arm64` can be read,
+including errno on failure. Both reads currently return EPERM in the managed
+execution context. This supports investigating restricted capability detection;
+it does not prove the sole cause of the framework refusal or a hardware defect.
+Diagnostic reports are private files under `runs/`, not boot benchmarks.
+
+Native runner protocol checks reject unknown fields, invalid limits, malformed
+JSON and requests over 16 KiB before creating a VM. The macOS CI job builds and
+signs the runner and runs those checks; it does not boot or qualify a guest.
+Python harness process tests likewise do not establish VM cancellation support.
 
 The implementation configures fewer devices than the earlier 1 GiB preflight,
 but this does not establish working 128 MiB guests or Firecracker-equivalent

@@ -42,6 +42,10 @@ cargo run --offline -- plan examples/task.json
 不依赖 OCI 管理包。实验包含输入输出、期限停止验收与重复启动基准工具。
 所有 guest 验收仍未通过。
 
+无须内核的 `doctor` 命令将能力信息读取错误与硬件支持情况分开记录。
+原生启动器协议检查在 macOS CI 上运行，不启动 guest。取消和有界串口处理仍属
+实验能力，必须通过真实 VM 验收才能宣称有效。
+
 较早的空上下文预检保留在 `experiments/macos-preflight/`。
 两个实验均不依赖 an-agent，也不会启动现有 Docker 或 Lima 虚拟机。
 

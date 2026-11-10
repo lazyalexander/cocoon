@@ -12,6 +12,8 @@ import stat
 import statistics
 import struct
 import subprocess
+import signal
+import threading
 import time
 import uuid
 
@@ -86,6 +88,51 @@ def build(linker):
     print(json.dumps(report, indent=2))
 
 
+def doctor():
+    binary = BUILD / "cocoon-vz"
+    result = subprocess.run([str(binary), "--doctor"], capture_output=True,
+                            text=True, timeout=15)
+    observed = json.loads(result.stdout)
+    if observed.get("schema") != "cocoon-vz-doctor-v1":
+        raise ValueError("unexpected diagnostic protocol")
+    runs = ROOT / "runs"
+    runs.mkdir(exist_ok=True)
+    report = {"runner_sha256": digest(binary), "exit_code": result.returncode,
+              "report": observed}
+    destination = runs / ("doctor-" + uuid.uuid4().hex + ".json")
+    destination.write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({"result": str(destination), **report}, indent=2))
+    return result.returncode
+
+
+def run_guest(binary, request, seconds, cancel):
+    """Own one runner; cancellation is a request, never termination evidence."""
+    with subprocess.Popen([str(binary), str(request)], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE) as process:
+        timer = None
+        if cancel:
+            def signal_runner():
+                try:
+                    process.send_signal(signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            timer = threading.Timer(min(2, seconds / 2), signal_runner)
+            timer.start()
+        try:
+            stdout, stderr = process.communicate(timeout=seconds + 15)
+            return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+        except BaseException:
+            # A lost/expired harness cannot leave its local runner unbounded.
+            # Reaping this process still does not prove its VM stopped.
+            process.kill()
+            process.communicate()
+            raise
+        finally:
+            if timer:
+                timer.cancel()
+                timer.join()
+
+
 def boot(args, emit=True):
     kernel = args.kernel.resolve(strict=True)
     if not kernel.is_file():
@@ -125,8 +172,7 @@ def boot(args, emit=True):
     try:
         report["identity_preparation_ms"] = (time.monotonic() - preparation_start) * 1000
         start = time.monotonic()
-        result = subprocess.run([str(BUILD / "cocoon-vz"), str(request_path)], capture_output=True,
-                                timeout=args.seconds + 15)
+        result = run_guest(BUILD / "cocoon-vz", request_path, args.seconds, args.case == "cancel")
         report["process_wall_ms"] = (time.monotonic() - start) * 1000
         report["exit_code"] = result.returncode
         report["runner"] = json.loads(result.stdout)
@@ -139,7 +185,8 @@ def boot(args, emit=True):
         if args.case == "roundtrip":
             report["passed"] = common and report["output_matched"] and observed.get("stop_reason") == "guest_done"
         else:
-            report["passed"] = common and observed.get("stop_reason") == "deadline" and observed.get("guest_done") is False
+            reason = "signal" if args.case == "cancel" else "deadline"
+            report["passed"] = common and observed.get("stop_reason") == reason and observed.get("guest_done") is False
     except subprocess.TimeoutExpired:
         report["error"] = "runner watchdog expired; termination unconfirmed, no automatic replay"
     except (json.JSONDecodeError, ValueError) as error:
@@ -180,17 +227,20 @@ def benchmark(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("doctor")
     compile_parser = commands.add_parser("build")
     compile_parser.add_argument("--linker")
     for name in ["boot", "benchmark"]:
         launch = commands.add_parser(name)
         launch.add_argument("--kernel", required=True, type=pathlib.Path)
-        launch.add_argument("--case", choices=["roundtrip", "deadline"], default="roundtrip")
+        launch.add_argument("--case", choices=["roundtrip", "deadline", "cancel"], default="roundtrip")
         launch.add_argument("--memory-mib", type=int, choices=range(128, 4097), metavar="128..4096", default=128)
         launch.add_argument("--seconds", type=int, choices=range(1, 61), metavar="1..60", default=10)
         if name == "benchmark":
             launch.add_argument("--samples", type=int, choices=range(1, 101), metavar="1..100", default=30)
     args = parser.parse_args()
+    if args.command == "doctor":
+        return doctor()
     if args.command == "build":
         build(args.linker)
         return 0

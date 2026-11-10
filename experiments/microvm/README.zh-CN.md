@@ -18,9 +18,12 @@ Virtualization.framework，不自行实现 VMM。
 
 ```sh
 python3 experiments/microvm/probe.py build
+python3 experiments/microvm/probe.py doctor
+python3 experiments/microvm/runner_checks.py experiments/microvm/build/cocoon-vz
 python3 -m unittest discover -s experiments/microvm -p 'test_*.py' -v
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case roundtrip
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case deadline --seconds 2
+python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case cancel --seconds 10
 python3 experiments/microvm/probe.py benchmark --kernel /absolute/path/to/Image --samples 30
 ```
 
@@ -42,9 +45,18 @@ virtio-console。实验计算内核摘要并只读使用，不重新分发内核
 停止它。两种场景均要求框架停止回调成功并观察到 stopped 状态，或观察到 guest
 停止。就绪标记只是工作负载证据，既不能证明终止，也不能授予权限。
 
+`cancel` 场景使用持续等待的 guest，在两秒后向所属启动器发送 SIGTERM；
+若期限较短，则在期限一半时发送。启动器在 VM 队列中处理 SIGTERM、SIGINT，
+请求框架停止，并仍须确认终止。在 guest 就绪之前收到信号不算验收通过。
+串口采用非阻塞读取，每个事件最多读取 4 KiB，在 VM 队列中处理，不在单独的
+回调队列积累 guest 输出。进入停止流程后，继续排空输出但不再保留字节。
+
 串口采集上限为 64 KiB。启动器设置 5 秒停止看门狗，Python 工具另有最终进程超时。
 看门狗到期记为终止未确认，不算通过，也不自动重试。本实验尚无持久监督、崩溃
 对账、调用者认证或生产级资源核算。
+
+外层超时或执行中断时，工具会终止并回收所属启动器进程，同时保留 VM 终止未知
+的结论。这只是本地进程清理，不能替代独立持久监督或 VM 对账。
 
 初始请求配置为 1 vCPU、128 MiB 内存。配置校验可能拒绝；只有真实成功启动才能
 证明支持。拒绝时不禁用环境检查，不选择其他引擎，也不改为宿主原生执行。
@@ -67,6 +79,16 @@ ARM64 guest init 和优化原生启动器均已构建成功。两种真实启动
 环境中均停在配置校验，返回 `VZErrorDomain` 错误码 2。Linux 启动、输入输出和
 期限停止仍未通过验收。此前 Hypervisor 空上下文测试成功，因此仍需诊断实际宿主
 环境中的框架拒绝原因。
+
+`doctor` 不需要内核，也不创建 VM。它记录框架可用性，以及能否读取
+`kern.hv_support` 和 `hw.optional.arm64`；读取失败时附带 errno。
+当前受管理环境中的两次读取均返回 EPERM。这支持进一步调查能力检测受限，
+但不能证明它是框架拒绝的唯一原因，也不能证明硬件有故障。
+诊断报告属于 `runs/` 中的私有文件，不是启动基准数据。
+
+原生启动器协议检查会在创建 VM 前拒绝未知字段、无效限制、畸形 JSON 和超过
+16 KiB 的请求。macOS CI 构建、签名启动器并运行这些检查，不启动或认证 guest。
+Python 工具的进程测试同样不能证明 VM 取消能力已有效。
 
 当前配置的设备比早期 1 GiB 预检更少，但这不证明 128 MiB guest 可用，也不代表
 达到 Firecracker 的安全保障。macOS 宿主进程隔离和恶意 guest 输出防护仍须单独验收。

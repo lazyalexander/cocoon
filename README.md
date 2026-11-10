@@ -79,3 +79,6 @@ The trusted host CLI now supports persistent image and VM registration; VM execu
 remains unavailable through this CLI.
 
 [Rust-first workspace architecture and contribution workflow](docs/architecture.md) · [Contributing](CONTRIBUTING.md)
+
+The [v0.1 acceptance specification](SPECIFICATION.md) defines mandatory gates and
+the development endpoint; its targets are not yet achieved guarantees.

@@ -22,7 +22,8 @@ Revocation must stop the VM before reporting completion. No native fallback.
 2. **M1 — real VM:** qualify compatible Linux boot, roundtrip, deadline and cancel;
    then add a minimal Debian ARM64 glibc root filesystem and writable disk.
 3. **M2 — host lifecycle:** a Rust manager with SQLite metadata, a private Unix
-   socket, CLI and one Swift runner per boot. Persist operation intent before
+   socket, CLI and one owned runner per boot; Rust owns supervision and protocol,
+   with Swift limited to any necessary Apple framework adapter. Persist operation intent before
    side effects. Reconcile uncertainty; never replay unknown execution.
 4. **M3 — agent access:** a compiled guest helper over vsock for bounded command
    output and file transfer. VM-scoped revocable credentials stay outside guests.
@@ -81,3 +82,14 @@ operator paths; publishing requires explicit authorization.
 Diskless M1 progress: pinned Debian kernel passed roundtrip, deadline and cancel
 at 128 MiB, plus 30/30 repeated roundtrips. See the experiment README for the
 measurement limits. Persistent-root M1 acceptance remains pending.
+
+The [v0.1 acceptance specification](../SPECIFICATION.md) governs completion of
+these milestones. Its persistent-root gates supersede the 30-boot exploration
+minimum; the diskless experiment does not satisfy release acceptance.
+
+Reference delivery: M5 / 16 GB, eight resident default VMs with four active on
+light agent work. Validate four-active capacity before eight-resident capacity.
+The specification separates mandatory latency budgets from optional optimization
+objectives, and capacity estimates from measured support. Heavy-workload counts
+are planning guidance only; no full-image publication or Internet timing promise
+is inferred from disk-clone or local-transfer measurements.

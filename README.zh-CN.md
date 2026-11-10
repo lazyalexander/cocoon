@@ -70,3 +70,5 @@ Cocoon 原创源码与文档采用 [MIT 协议](LICENSE)。用户提供的 Linux
 持久化镜像和 VM 注册；该 CLI 尚不能执行 VM。
 
 [Rust 优先 workspace 架构与贡献流程](docs/architecture.zh-CN.md) · [Contributing](CONTRIBUTING.zh-CN.md)
+
+[v0.1 验收规范](SPECIFICATION.zh-CN.md) 定义强制门槛和开发终点；目标尚不是已实现保证。

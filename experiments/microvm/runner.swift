@@ -183,15 +183,36 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         installCancellation()
         report["start_requested_ms"] = elapsed()
         queue.asyncAfter(deadline: .now() + req.seconds) { self.stop("deadline") }
-        machine.start { result in
-            switch result {
-            case .success:
-                self.report["vm_running_ms"] = self.elapsed()
-                if self.stopping { self.performStop() }
-            case .failure(let error):
-                self.report["error"] = error.localizedDescription
-                // A failed start is not asserted to be confirmed termination.
-                self.finish("start_failed", 2)
+        if req.snapshotMode == "restore", let path = req.restorePath {
+            machine.restoreMachineStateFrom(url: URL(fileURLWithPath: path)) { error in
+                guard error == nil else {
+                    self.report["snapshot_error"] = error!.localizedDescription
+                    self.finish("snapshot_restore_failed", 2)
+                    return
+                }
+                self.report["snapshot_restore_ms"] = self.elapsed()
+                machine.resume { result in
+                    switch result {
+                    case .success:
+                        self.report["vm_running_ms"] = self.elapsed()
+                        if self.stopping { self.performStop() }
+                    case .failure(let error):
+                        self.report["snapshot_error"] = error.localizedDescription
+                        self.finish("snapshot_resume_failed", 2)
+                    }
+                }
+            }
+        } else {
+            machine.start { result in
+                switch result {
+                case .success:
+                    self.report["vm_running_ms"] = self.elapsed()
+                    if self.stopping { self.performStop() }
+                case .failure(let error):
+                    self.report["error"] = error.localizedDescription
+                    // A failed start is not asserted to be confirmed termination.
+                    self.finish("start_failed", 2)
+                }
             }
         }
     }
@@ -214,6 +235,11 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             report["guest_ready"] = true
             report["guest_ready_ms"] = elapsed()
         }
+        if req.snapshotMode == "save", report["snapshot_save_requested"] as? Bool != true,
+           text.contains("COCOON_SNAPSHOT_READY:" + req.token + "\n") {
+            report["snapshot_save_requested"] = true
+            saveSnapshot()
+        }
         if req.project != nil && !projectStarted && text.contains("COCOON_HELPER_READY\n") {
             projectStarted = true
             connectProject()
@@ -222,6 +248,46 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             report["guest_done"] = true
             report["guest_done_ms"] = elapsed()
             stop("guest_done")
+        }
+    }
+
+    func saveSnapshot() {
+        guard let req = request, let path = req.snapshotPath, let machine = vm, machine.canPause else {
+            report["snapshot_error"] = "VM cannot be paused"
+            stop("snapshot_save_failed")
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            report["snapshot_error"] = "snapshot destination already exists"
+            stop("snapshot_save_failed")
+            return
+        }
+        machine.pause { result in
+            switch result {
+            case .failure(let error):
+                self.report["snapshot_error"] = error.localizedDescription
+                self.stop("snapshot_save_failed")
+            case .success:
+                machine.saveMachineStateTo(url: url) { error in
+                    guard error == nil else {
+                        self.report["snapshot_error"] = error!.localizedDescription
+                        self.stop("snapshot_save_failed")
+                        return
+                    }
+                    do {
+                        let output = try FileHandle(forWritingTo: url)
+                        try output.synchronize()
+                        try output.close()
+                        self.report["snapshot_saved"] = true
+                        self.report["snapshot_save_ms"] = self.elapsed()
+                        self.stop("snapshot_saved")
+                    } catch {
+                        self.report["snapshot_error"] = error.localizedDescription
+                        self.stop("snapshot_save_failed")
+                    }
+                }
+            }
         }
     }
 

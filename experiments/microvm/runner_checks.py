@@ -24,6 +24,7 @@ class RunnerProtocolTests(unittest.TestCase):
         self.assertEqual(report["status"], "invalid_request")
         self.assertFalse(report["termination_confirmed"])
         self.assertFalse(report["guest_ready"])
+        self.assertNotEqual(report.get("snapshot_saved"), True)
         self.assertNotIn("start_requested_ms", report)
 
     def test_unknown_fields_and_invalid_bounds_refuse_before_vm_start(self):

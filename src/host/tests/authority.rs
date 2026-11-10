@@ -80,7 +80,7 @@ fn wal_is_ordered_persistent_and_tamper_evident() {
 }
 
 #[test]
-fn production_spawn_failure_is_unknown_and_not_replayed() {
+fn production_spawn_failure_requires_explicit_recovery_without_replay() {
     let sandbox = Sandbox::new();
     let manager = Manager::open(&sandbox.0).unwrap();
     let input = sandbox.0.join("linux");
@@ -97,7 +97,7 @@ fn production_spawn_failure_is_unknown_and_not_replayed() {
     let runner = sandbox.0.join("not-executable");
     fs::write(&runner, [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1]).unwrap();
     assert!(manager.start_with_runner(vm, &runner).is_err());
-    assert_eq!(manager.get(vm).unwrap().state, VmState::Unknown);
+    assert_eq!(manager.get(vm).unwrap().state, VmState::RecoveryRequired);
     assert!(manager.start_with_runner(vm, &runner).is_err());
     assert!(
         manager

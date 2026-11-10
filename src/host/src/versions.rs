@@ -13,11 +13,21 @@ impl Manager {
         let next = dir.join("root.rollback-new");
         let previous = dir.join("root.rollback-old");
         if previous.exists() {
+            let original: Option<(String, Option<String>)> = self
+                .db
+                .query_row(
+                    "SELECT image,disk_copy FROM rollback_intents WHERE vm=?1",
+                    [id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
             let status: Option<String> = self.db.query_row(
                 "SELECT status FROM operations WHERE kind='rollback' AND target=?1 ORDER BY rowid DESC LIMIT 1",
                 [id.to_string()], |row| row.get(0)).optional()?;
             if status.as_deref() == Some("complete") {
                 fs::remove_file(previous)?;
+                self.db
+                    .execute("DELETE FROM rollback_intents WHERE vm=?1", [id.to_string()])?;
                 sync_directory(&dir)?;
                 return Ok(());
             }
@@ -28,12 +38,21 @@ impl Manager {
             fs::rename(previous, &current)?;
             sync_directory(&dir)?;
             let mut vm = self.get(id)?;
+            if let Some((image, disk_copy)) = original {
+                vm.image = ImageId::from(
+                    Uuid::parse_str(&image)
+                        .map_err(|_| crate::Error::from("invalid rollback image"))?,
+                );
+                vm.disk_copy = serde_json::from_str(&disk_copy.unwrap_or("null".into()))?;
+            }
             vm.state = VmState::RecoveryRequired;
             vm.active_lease = None;
             vm.suspend_state = None;
             self.save_vm(&mut vm)?;
+            self.db
+                .execute("DELETE FROM rollback_intents WHERE vm=?1", [id.to_string()])?;
             return Err(
-                "interrupted rollback restored the previous disk; recovery approval is required"
+                "interrupted rollback restored the previous disk and metadata; recovery approval is required"
                     .into(),
             );
         }
@@ -122,6 +141,14 @@ impl Manager {
         )?;
         let operation = OperationId::from(Uuid::new_v4());
         self.begin(operation, "rollback", id)?;
+        self.db.execute(
+            "INSERT INTO rollback_intents VALUES (?1,?2,?3)",
+            rusqlite::params![
+                id.to_string(),
+                vm.image.to_string(),
+                serde_json::to_string(&vm.disk_copy)?
+            ],
+        )?;
         let dir = self.root.join("vms").join(id.to_string());
         let current = dir.join("root.raw");
         let next = dir.join("root.rollback-new");
@@ -148,6 +175,8 @@ impl Manager {
             "UPDATE operations SET status='complete' WHERE id=?1",
             [operation.to_string()],
         )?;
+        self.db
+            .execute("DELETE FROM rollback_intents WHERE vm=?1", [id.to_string()])?;
         fs::remove_file(previous)?;
         self.append_journal(
             id,

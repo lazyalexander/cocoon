@@ -210,6 +210,8 @@ impl Manager {
     pub fn call_api(&self, mut request: HostRequest) -> Result<HostResponse> {
         request.credential = self.api_credential()?;
         let mut stream = std::os::unix::net::UnixStream::connect(self.api_socket_path())?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(60)))?;
         send(&request, &mut stream)?;
         Ok(receive(&mut stream)?)
     }

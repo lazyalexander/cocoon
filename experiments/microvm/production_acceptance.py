@@ -50,7 +50,11 @@ def main():
             raise TimeoutError("host API socket readiness")
     except BaseException:
         server.terminate()
-        server.wait(timeout=5)
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait()
         socket.unlink(missing_ok=True)
         raise
     authority = None

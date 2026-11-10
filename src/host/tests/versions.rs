@@ -74,17 +74,34 @@ fn interrupted_rollback_restores_previous_disk_and_requires_recovery() {
         .unwrap();
     let dir = root.join("vms").join(vm.to_string());
     fs::write(dir.join("root.raw"), b"important-work").unwrap();
+    let other_input = root.join("other-input");
+    fs::write(&other_input, b"other-baseline").unwrap();
+    let other = manager
+        .import_image(&other_input, &other_input, &other_input, "test MIT")
+        .unwrap();
     let db = rusqlite::Connection::open(root.join("state.sqlite3")).unwrap();
     db.execute(
         "INSERT INTO operations VALUES ('rollback-test','rollback',?1,'pending')",
         [vm.to_string()],
     )
     .unwrap();
+    db.execute(
+        "INSERT INTO rollback_intents VALUES (?1,?2,?3)",
+        rusqlite::params![
+            vm.to_string(),
+            base.to_string(),
+            serde_json::to_string(&manager.get(vm).unwrap().disk_copy).unwrap()
+        ],
+    )
+    .unwrap();
     fs::rename(dir.join("root.raw"), dir.join("root.rollback-old")).unwrap();
-    fs::copy(input, dir.join("root.raw")).unwrap();
-    assert!(manager.rollback(vm, base).is_err());
+    fs::copy(other_input, dir.join("root.raw")).unwrap();
+    db.execute("UPDATE vms SET record=json_set(record,'$.image',?1,'$.state','suspended','$.suspend_state','/old-state') WHERE id=?2",
+        rusqlite::params![other.to_string(), vm.to_string()]).unwrap();
+    assert!(manager.rollback(vm, other).is_err());
     assert_eq!(fs::read(dir.join("root.raw")).unwrap(), b"important-work");
     assert_eq!(manager.get(vm).unwrap().state, VmState::RecoveryRequired);
+    assert_eq!(manager.get(vm).unwrap().image, base);
     assert!(manager.get(vm).unwrap().suspend_state.is_none());
     drop(manager);
     fs::remove_dir_all(root).unwrap();

@@ -79,6 +79,7 @@ impl Manager {
             CREATE TABLE IF NOT EXISTS boots(id TEXT PRIMARY KEY, vm TEXT NOT NULL, status TEXT NOT NULL, report TEXT);
             CREATE TABLE IF NOT EXISTS journal(sequence INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, vm TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, previous_sha256 TEXT NOT NULL, sha256 TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS executions(attempt TEXT PRIMARY KEY, vm TEXT NOT NULL, record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rollback_intents(vm TEXT PRIMARY KEY, image TEXT NOT NULL, disk_copy TEXT);
             PRAGMA user_version=2; COMMIT;")?;
         db.execute("UPDATE images SET manifest=json_set(manifest,'$.approved',json('true')) WHERE json_extract(manifest,'$.approved') IS NULL", [])?;
         Ok(Self {

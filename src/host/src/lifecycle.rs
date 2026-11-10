@@ -99,6 +99,29 @@ fn event(path: &Path, expected: &str, token: &str) -> Result<bool> {
     Ok(false)
 }
 
+fn retained_exit_is_recoverable(execution: &ExecutionRecord) -> bool {
+    let path = execution
+        .request
+        .parent()
+        .map(|dir| dir.join("stdout.json"));
+    let report = path
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    report.is_some_and(|report| {
+        report["termination_confirmed"] == true
+            || [
+                "invalid_request",
+                "setup_failed",
+                "blocked",
+                "start_failed",
+                "snapshot_setup_failed",
+                "snapshot_restore_failed",
+                "snapshot_restore_claimed",
+            ]
+            .contains(&report["status"].as_str().unwrap_or(""))
+    })
+}
+
 impl Manager {
     fn execution(&self, attempt: AttemptId) -> Result<ExecutionRecord> {
         let record: String = self.db.query_row(
@@ -234,12 +257,23 @@ impl Manager {
         )?;
         let stdout = fs::File::create_new(run.join("stdout.json"))?;
         let stderr = fs::File::create_new(run.join("stderr.txt"))?;
-        let mut child = Command::new(runner)
+        let mut child = match Command::new(runner)
             .arg(&request)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
-            .spawn()?;
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                vm.state = VmState::RecoveryRequired;
+                vm.active_lease = None;
+                execution.status = "spawn_failed".into();
+                self.save_vm(&mut vm)?;
+                self.save_execution(&execution)?;
+                return Err(format!("runner spawn failed: {error}").into());
+            }
+        };
         execution.pid = Some(child.id());
         self.save_execution(&execution)?;
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -253,32 +287,19 @@ impl Manager {
                 break;
             }
             if let Some(status) = child.try_wait()? {
-                if restore.is_some() {
-                    let report = fs::read(run.join("stdout.json"))
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-                    let rejected = report.as_ref().is_some_and(|report| {
-                        [
-                            "snapshot_restore_failed",
-                            "snapshot_setup_failed",
-                            "snapshot_restore_claimed",
-                        ]
-                        .contains(&report["status"].as_str().unwrap_or(""))
-                    });
-                    vm.state = if rejected {
-                        VmState::RecoveryRequired
-                    } else {
-                        VmState::Unknown
-                    };
+                if retained_exit_is_recoverable(&execution) {
+                    vm.state = VmState::RecoveryRequired;
                     vm.active_lease = None;
-                    execution.status = if rejected {
-                        "recovery_required".into()
-                    } else {
-                        "unknown".into()
-                    };
+                    execution.status = "recovery_required".into();
                     self.save_vm(&mut vm)?;
-                    self.save_execution(&execution)?;
+                } else {
+                    vm.state = VmState::Unknown;
+                    execution.status = "unknown".into();
+                    if restore.is_some() {
+                        self.save_vm(&mut vm)?;
+                    }
                 }
+                self.save_execution(&execution)?;
                 return Err(format!("runner exited before guest readiness: {status}").into());
             }
             if Instant::now() >= deadline {
@@ -487,6 +508,24 @@ impl Manager {
         let attempt = vm.active_attempt.ok_or("missing active attempt")?;
         let mut execution = self.execution(attempt)?;
         let pid = execution.pid.ok_or("missing runner pid")?;
+        let token = attempt.raw().simple().to_string();
+        if event(&execution.events, "stopped", &token)?
+            && runner_exited(self, attempt, pid, &execution.request)?
+        {
+            vm.state = if matches!(
+                previous,
+                VmState::Running | VmState::Stopping | VmState::Unknown
+            ) {
+                VmState::Stopped
+            } else {
+                VmState::RecoveryRequired
+            };
+            vm.active_lease = None;
+            execution.status = "stopped".into();
+            self.save_vm(&mut vm)?;
+            self.save_execution(&execution)?;
+            return Ok(());
+        }
         vm.state = VmState::Stopping;
         execution.status = "stopping".into();
         self.save_vm(&mut vm)?;
@@ -563,6 +602,11 @@ impl Manager {
         let mut execution = self.execution(attempt)?;
         let token = attempt.raw().simple().to_string();
         let Some(pid) = execution.pid else {
+            if execution.status == "spawn_failed" {
+                vm.state = VmState::RecoveryRequired;
+                vm.active_lease = None;
+                self.save_vm(&mut vm)?;
+            }
             return Ok(vm.state);
         };
         let exited = runner_exited(self, attempt, pid, &execution.request)?;
@@ -593,9 +637,15 @@ impl Manager {
             }
             self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
-        } else if exited && previous != VmState::Unknown {
-            vm.state = VmState::Unknown;
-            execution.status = "unknown".into();
+        } else if exited {
+            if retained_exit_is_recoverable(&execution) {
+                vm.state = VmState::RecoveryRequired;
+                vm.active_lease = None;
+                execution.status = "recovery_required".into();
+            } else {
+                vm.state = VmState::Unknown;
+                execution.status = "unknown".into();
+            }
             self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
         }
@@ -670,6 +720,32 @@ impl Manager {
             fs::DirBuilder::new().mode(0o700).create(&exports)?;
         }
         let destination = exports.join(name);
+        if destination.exists() {
+            let intended = self.journal()?.into_iter().any(|entry| {
+                entry.kind == "artifact_intent"
+                    && entry.payload["attempt"] == attempt.to_string()
+                    && entry.payload["name"] == name
+            });
+            if !intended {
+                return Err("existing artifact has no matching export intent".into());
+            }
+            let bytes = fs::metadata(&destination)?.len();
+            let sha256 = hash(&destination)?;
+            self.append_journal(
+                vm_id,
+                "artifact_complete",
+                serde_json::json!({"attempt": attempt, "name": name, "bytes": bytes}),
+            )?;
+            return Ok(
+                serde_json::json!({"name": name, "bytes": bytes, "sha256": sha256,
+                "automatically_executed": false, "reconciled": true}),
+            );
+        }
+        self.append_journal(
+            vm_id,
+            "artifact_intent",
+            serde_json::json!({"attempt": attempt, "name": name}),
+        )?;
         let partial = exports.join(format!(".{name}.{}.partial", Uuid::new_v4()));
         let mut output = fs::OpenOptions::new()
             .write(true)

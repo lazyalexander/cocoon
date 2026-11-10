@@ -20,11 +20,26 @@ impl Manager {
         mode: &str,
         payload: &str,
     ) -> Result<serde_json::Value> {
-        if !["write", "read"].contains(&mode)
-            || payload.len() != 32
-            || !payload.bytes().all(|b| b.is_ascii_hexdigit())
-        {
-            return Err("invalid persistence fixture parameters".into());
+        if !["write", "read"].contains(&mode) {
+            return Err("invalid persistence mode".into());
+        }
+        self.fixture_boot(id, runner, mode, payload)
+    }
+
+    /// Explicit fixed code workflow with no external grant or daemon API implied.
+    pub fn project_boot(&self, id: VmId, runner: &Path) -> Result<serde_json::Value> {
+        self.fixture_boot(id, runner, "project", &Uuid::new_v4().simple().to_string())
+    }
+
+    fn fixture_boot(
+        &self,
+        id: VmId,
+        runner: &Path,
+        mode: &str,
+        payload: &str,
+    ) -> Result<serde_json::Value> {
+        if payload.len() != 32 || !payload.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("invalid fixture payload".into());
         }
         if !runner.is_absolute() || !fs::symlink_metadata(runner)?.is_file() {
             return Err("runner must be an explicit absolute regular file".into());
@@ -63,8 +78,18 @@ impl Manager {
             .join(boot.to_string());
         fs::create_dir(&run_dir)?;
         let image = self.root.join("images").join(vm.image.to_string());
-        let request = serde_json::json!({"kernel": image.join("kernel"), "initrd":image.join("initrd"),
+        let project_requests = crate::project::requests(&token);
+        let mut request = serde_json::json!({"kernel": image.join("kernel"), "initrd":image.join("initrd"),
             "token":token,"memoryMiB":512,"seconds":10,"rootDisk":disk,"diskMode":mode,"payload":payload});
+        if mode == "project" {
+            for request in &project_requests {
+                request.validate()?;
+            }
+            let path = run_dir.join("project.json");
+            fs::write(&path, serde_json::to_vec(&project_requests)?)?;
+            fs::File::open(&path)?.sync_all()?;
+            request["project"] = serde_json::to_value(path)?;
+        }
         let request_file = run_dir.join("request.json");
         fs::write(&request_file, serde_json::to_vec(&request)?)?;
         fs::File::open(&request_file)?.sync_all()?;
@@ -145,19 +170,44 @@ impl Manager {
         let persisted = serial
             .lines()
             .any(|s| s == format!("COCOON_PERSIST:{mode}:{payload}:{token}"));
+        let project_verified = mode == "project"
+            && crate::project::verify(&project_requests, &observed["guest_transport"]);
         let passed = terminated
             && root
-            && persisted
             && observed["guest_ready"] == true
-            && observed["stop_reason"] == "guest_done";
+            && if mode == "project" {
+                project_verified && observed["stop_reason"] == "project_complete"
+            } else {
+                persisted && observed["stop_reason"] == "guest_done"
+            };
+        // The receiver chooses the name and directory; guest paths never become host paths.
+        // Only a fully checked response and confirmed VM stop permit publication.
+        let artifact = if passed && mode == "project" {
+            use std::{io::Write, os::unix::fs::OpenOptionsExt};
+            let path = run_dir.join("artifact.txt");
+            let content = observed["guest_transport"][5]["result"]["Ok"]["content"]
+                .as_str()
+                .ok_or("missing artifact")?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            crate::disk::sync_directory(&run_dir)?;
+            serde_json::json!({"name":"artifact.txt", "bytes":content.len(), "sha256":hash(&path)?, "automatically_executed":false})
+        } else {
+            serde_json::Value::Null
+        };
         vm.state = if terminated {
             VmState::Stopped
         } else {
             VmState::Unknown
         };
-        let report = serde_json::json!({"schema":"cocoon-persistence-v1","vm":id,"boot":boot,"mode":mode,
+        let report = serde_json::json!({"schema":if mode == "project" { "cocoon-project-v1" } else { "cocoon-persistence-v1" },"vm":id,"boot":boot,"mode":mode,
             "runner_sha256":runner_hash,"passed":passed,"termination_confirmed":terminated,
-            "root_verified":root,"payload_verified":persisted,"timed_out":timed_out,"runner":observed});
+            "project_verified":project_verified,"artifact":artifact,"root_verified":root,"payload_verified":persisted,"timed_out":timed_out,"runner":observed});
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
             "UPDATE vms SET record=?1 WHERE id=?2",

@@ -17,6 +17,7 @@ use uuid::Uuid;
 mod disk;
 mod error;
 pub mod persistence;
+mod project;
 mod types;
 use disk::{copy_new, hash, sync_directory};
 pub use error::{Error, Result};

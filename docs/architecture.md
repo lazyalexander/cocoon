@@ -23,9 +23,11 @@ VMM internals or equivalent containment. The native runner remains experimental.
 | --- | --- | --- |
 | `cocoon` | CLI parsing and host-facing output | runtime, host |
 | `cocoon-runtime` | Platform-neutral task validation and attempt state | none |
-| `cocoon-host` | SQLite, image custody, VM registration and experimental supervision | platform |
+| `cocoon-host` | SQLite, image custody, VM registration and experimental supervision | platform, guest-wire |
 | `cocoon-platform` | Narrow native filesystem FFI and sparse copying | none |
 | `cocoon-guest-fixture` | Fixed Linux ARM64 root-disk acceptance | none |
+| `cocoon-guest-wire` | Typed bounded experimental guest protocol | none |
+| `cocoon-guest-helper` | Linux vsock and guest file/command operations | guest-wire |
 
 SQLite and filesystem custody do not belong in the contract crate. Guest helpers
 must never depend on the host administration crate. Every workspace member is a
@@ -60,3 +62,11 @@ check entry point. CI enforces workspace tests and lints on the pinned version;
 macOS protocol checks remain distinct from real VM acceptance. Keep existing
 private benchmark artifacts excluded. See [contribution policy](../CONTRIBUTING.md)
 for review, dependencies, provenance and publication rules.
+
+## Experimental project path
+
+`cocoon-guest-wire` contains strict guest message types and bounded framing;
+`cocoon-guest-helper` depends only on that crate and libc, never host administration.
+The host now also depends on guest-wire to generate and verify the fixed workflow.
+Swift ProjectChannel only transports bytes; Rust owns verification and artifact
+receipt after confirmed stop. See the [project experiment](../experiments/microvm/PROJECT.md).

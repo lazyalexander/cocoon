@@ -17,10 +17,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --locked --all-targets -- -D warnings
-      - run: cargo clippy --locked -p cocoon-guest-fixture --target aarch64-unknown-linux-musl --release -- -D warnings
+      - run: cargo clippy --locked -p cocoon-guest-fixture -p cocoon-guest-helper --target aarch64-unknown-linux-musl --release -- -D warnings
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: python3 tools/check_docs.py
       - run: python3 -m unittest discover -s experiments/microvm -p 'test_*.py' -v
 
   macos-runner-protocol:
@@ -31,7 +32,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Build native runner
-        run: swiftc -swift-version 5 -O experiments/microvm/runner.swift -o /tmp/cocoon-vz -framework Virtualization
+        run: |
+          cat experiments/microvm/runner.swift experiments/microvm/ProjectChannel.swift > /tmp/cocoon-main.swift
+          swiftc -swift-version 5 -O /tmp/cocoon-main.swift -o /tmp/cocoon-vz -framework Virtualization
       - name: Sign experimental runner
         run: codesign --force --sign - --entitlements experiments/macos-preflight/entitlements.plist /tmp/cocoon-vz
       - name: Check protocol without booting a guest

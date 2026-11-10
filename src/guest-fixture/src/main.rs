@@ -116,6 +116,12 @@ mod guest {
             return Err("executable is not rooted on disk".into());
         }
         println!("COCOON_READY:{token}");
+        if mode == "project" {
+            mount_fs("devtmpfs", "/dev", "devtmpfs")?;
+            println!("COCOON_ROOT:ext4:/dev/vda:{token}");
+            std::io::stdout().flush()?;
+            return Err(Command::new("/guest-helper").exec().into());
+        }
         if mode == "write" {
             let mut file = fs::OpenOptions::new()
                 .write(true)

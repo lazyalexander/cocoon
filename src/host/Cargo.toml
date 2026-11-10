@@ -11,6 +11,7 @@ description = "Trusted host registration and image custody"
 workspace = true
 
 [dependencies]
+cocoon-guest-wire.workspace = true
 cocoon-platform.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

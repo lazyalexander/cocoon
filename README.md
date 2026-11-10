@@ -2,14 +2,16 @@
 
 English (authoritative) · [简体中文](README.zh-CN.md)
 
+[User guide](docs/user-guide.md) · [简体中文使用说明](docs/user-guide.zh-CN.md)
+
 Cocoon is an independent execution runtime project designed for agent workloads.
 The first target is headless Linux ARM64 execution on Apple Silicon macOS.
 an-agent is the intended first consumer, not a runtime dependency.
 
-**Current status: persistent host registration foundation and a real diskless
-macOS VM experiment. With a pinned Debian ARM64 kernel, roundtrip, deadline and
-cancellation passed at 128 MiB; 30 repeated roundtrips passed. The persistent-disk
-production backend is not implemented or qualified.**
+**Current status: persistent host registration, real diskless and ext4-root VM
+acceptance, and an offline Rust/vsock shell-project experiment. Three project
+boots passed code editing, execution and artifact receipt. Production agent
+admission, recovery and the complete Debian backend remain unqualified.**
 
 ## Model
 
@@ -44,7 +46,7 @@ The minimal boot experiment is documented in
 [`experiments/microvm/README.md`](experiments/microvm/README.md). It builds a
 freestanding ARM64 Linux init and an optimized native framework runner with no
 OCI package dependency. It includes input/output, deadline-stop acceptance and
-a repeated-boot benchmark harness. Diskless guest acceptance has passed; persistent-root acceptance is pending.
+a repeated-boot benchmark harness. Diskless and fixed persistent-root acceptance have passed; production qualification remains pending.
 
 The kernel-free `doctor` command records capability-read errors separately from
 hardware support. Native runner protocol checks run on macOS CI without booting
@@ -53,6 +55,11 @@ and production supervision remain separate qualification work.
 
 The earlier empty-context probe remains under `experiments/macos-preflight/`.
 Neither experiment depends on an-agent or starts existing Docker/Lima machines.
+
+The [offline project experiment](experiments/microvm/PROJECT.md) now exercises
+Rust vsock file operations, shell-code editing/execution and bounded artifact
+receipt in a real VM. Three consecutive project boots passed. It is not yet an
+external agent service or complete Debian development image.
 
 ## Next acceptance gate
 

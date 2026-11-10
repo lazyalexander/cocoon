@@ -37,3 +37,7 @@ Firecracker's dependency-audit practices are a reference, but Cocoon does not ye
 have an automated cargo-deny/advisory gate. Do not describe manual dependency
 review as an automated security audit. Third-party source additions must retain
 original licenses and provenance; Cocoon's MIT license does not replace them.
+
+All Markdown documentation must have English and Simplified Chinese companions
+with reciprocal introductory links. `python3 tools/check_docs.py` checks pairing
+and local link destinations; it runs in `tools/check` and CI.

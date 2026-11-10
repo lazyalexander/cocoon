@@ -54,9 +54,26 @@ name = "cocoon-guest-fixture"
 version = "0.1.0"
 
 [[package]]
+name = "cocoon-guest-helper"
+version = "0.1.0"
+dependencies = [
+ "cocoon-guest-wire",
+ "libc",
+]
+
+[[package]]
+name = "cocoon-guest-wire"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cocoon-host"
 version = "0.1.0"
 dependencies = [
+ "cocoon-guest-wire",
  "cocoon-platform",
  "rusqlite",
  "serde",

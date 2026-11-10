@@ -2,13 +2,15 @@
 
 [English（权威版本）](README.md) · 简体中文
 
+[使用说明书](docs/user-guide.zh-CN.md) · [English user guide](docs/user-guide.md)
+
 Cocoon 是面向智能体工作负载设计的独立执行运行时项目。首个目标是在
 Apple Silicon macOS 上无头运行 Linux ARM64。an-agent 是预期的首个使用者，
 不属于运行时依赖。
 
-**当前状态：持久化宿主注册基础，以及已完成真实启动的无磁盘 macOS VM 实验。
-固定 Debian ARM64 内核在 128 MiB 下通过输入输出、期限停止和取消验收，30 次重复
-输入输出全部通过。持久根磁盘生产后端尚未实现或通过资格验收。**
+**当前状态：持久化宿主注册、真实无磁盘与 ext4 根磁盘 VM 验收，以及离线 Rust/vsock
+shell 项目实验。三次项目启动通过代码修改、执行和产物接收。生产 agent 准入、
+恢复和完整 Debian 后端仍未通过资格验收。**
 
 ## 模型
 
@@ -41,13 +43,17 @@ cargo run --offline -- plan examples/task.json
 [`experiments/microvm/README.zh-CN.md`](experiments/microvm/README.zh-CN.md)。
 它构建不依赖标准运行库的 ARM64 Linux init，以及经过优化的原生框架启动器，
 不依赖 OCI 管理包。实验包含输入输出、期限停止验收与重复启动基准工具。
-无磁盘 guest 验收已通过，持久根磁盘验收仍待完成。
+无磁盘与固定持久根磁盘验收已通过，生产资格验收仍待完成。
 
 无须内核的 `doctor` 命令将能力信息读取错误与硬件支持情况分开记录。
 原生启动器协议检查在 macOS CI 上运行，不启动 guest。取消已通过有界无磁盘实验；恶意输出和生产监督仍须单独验收。
 
 较早的空上下文预检保留在 `experiments/macos-preflight/`。
 两个实验均不依赖 an-agent，也不会启动现有 Docker 或 Lima 虚拟机。
+
+[离线项目实验](experiments/microvm/PROJECT.zh-CN.md) 已在真实 VM 中验证 Rust vsock
+文件操作、shell 代码修改/执行和有界产物接收，连续三次启动通过。它尚不是
+外部 agent 服务或完整 Debian 开发镜像。
 
 ## 下一阶段验收
 

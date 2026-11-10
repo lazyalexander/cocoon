@@ -42,6 +42,16 @@ class RunnerProtocolTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.request(json.dumps({**base, **change}).encode())
 
+    def test_project_mode_requires_explicit_project_path(self):
+        base = {"kernel":"/unused", "initrd":"/unused", "token":"a"*32,
+                "memoryMiB":512, "seconds":1, "rootDisk":"/unused", "payload":"a"*32}
+        for change in [{"diskMode":"project"},
+                       {"diskMode":"project", "project":"relative"},
+                       {"diskMode":"write", "project":"/unused"},
+                       {"diskMode":"project", "project":None}]:
+            with self.subTest(change=change):
+                self.request(json.dumps({**base, **change}).encode())
+
     def test_malformed_missing_and_oversized_requests_refuse(self):
         for raw in [b"[]", b"{}", b"not-json", b" " * 16385]:
             with self.subTest(length=len(raw)):

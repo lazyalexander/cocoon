@@ -27,3 +27,6 @@ features、许可、来源、二进制和运行成本及相关安全公告。不
 借鉴 Firecracker 的依赖审计实践，但 Cocoon 目前尚无自动 cargo-deny/安全公告门禁，
 不能把人工依赖审阅称为自动安全审计。引入第三方源码必须保留原始许可和来源，
 不能用 Cocoon 的 MIT 许可覆盖。
+
+所有 Markdown 文档都须有英文和简体中文伴随版本，并在开头提供双向语言链接。
+`python3 tools/check_docs.py` 检查配对和本地链接目标，已加入 `tools/check` 与 CI。

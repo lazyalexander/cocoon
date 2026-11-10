@@ -21,9 +21,11 @@ Firecracker 的 VMM 内部结构或等价隔离。原生 runner 仍是实验。
 | --- | --- | --- |
 | `cocoon` | CLI 解析与宿主输出 | runtime、host |
 | `cocoon-runtime` | 平台无关任务校验与尝试状态 | 无 |
-| `cocoon-host` | SQLite、镜像保管、注册及实验监督 | platform |
+| `cocoon-host` | SQLite、镜像保管、注册及实验监督 | platform、guest-wire |
 | `cocoon-platform` | 最小原生文件系统 FFI 与稀疏复制 | 无 |
 | `cocoon-guest-fixture` | 固定 Linux ARM64 根磁盘验收 | 无 |
+| `cocoon-guest-wire` | 类型化有界实验 guest 协议 | 无 |
+| `cocoon-guest-helper` | Linux vsock 和 guest 文件/命令操作 | guest-wire |
 
 SQLite 和文件保管不属于契约 crate。guest helper 不得依赖宿主管理 crate。
 所有成员均为默认成员，根目录检查覆盖全部实现。CLI 命令保持不变；Rust 调用方从
@@ -49,3 +51,10 @@ runner 死亡不证明终止；未知操作必须核对。
 release profile 和统一本地检查入口。CI 使用固定版本检查整个 workspace，macOS
 协议测试与真实 VM 验收分开。继续排除私有基准文件。审阅、依赖、来源和发布规则见
 [贡献指南](../CONTRIBUTING.zh-CN.md)。
+
+## 实验性项目链路
+
+`cocoon-guest-wire` 包含严格 guest 消息类型和有界帧；`cocoon-guest-helper`
+只依赖该 crate 与 libc，不依赖宿主管理。宿主新增 guest-wire 依赖以生成和核验
+固定工作流。Swift ProjectChannel 仅传输字节，Rust 负责核验以及确认停止后的
+产物接收。见[项目实验](../experiments/microvm/PROJECT.zh-CN.md)。

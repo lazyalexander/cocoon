@@ -12,6 +12,7 @@ struct Request: Decodable {
     let rootDisk: String?
     let diskMode: String?
     let payload: String?
+    let project: String?
 }
 
 func hostDiagnostics() -> [String: Any] {
@@ -41,6 +42,8 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
     var signalSources: [DispatchSourceSignal] = []
     var request: Request?
     var bytes = Data()
+    var projectStarted = false
+    var projectRequests: [[String: Any]] = []
     var stopping = false
     var stopSent = false
     var finished = false
@@ -143,7 +146,23 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
                 return
             }
         }
-        // Optional fixed-fixture disk; no network, graphics, shared directories or vsock.
+        if let project = req.project {
+            do {
+                let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: project))
+                defer { try? input.close() }
+                let data = try input.read(upToCount: 16385) ?? Data()
+                guard data.count <= 16384, let requests = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                      !requests.isEmpty, requests.count <= 16 else { throw NSError(domain: "project request limit", code: 1) }
+                projectRequests = requests
+                config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+                report["vsock_devices"] = 1
+            } catch {
+                report["error"] = error.localizedDescription
+                finish("setup_failed", 2)
+                return
+            }
+        }
+        // No network, graphics or shared directories. Optional project vsock only.
         do { try config.validate() } catch {
             let e = error as NSError
             report["error"] = ["domain": e.domain, "code": e.code, "message": e.localizedDescription]
@@ -189,10 +208,41 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             report["guest_ready"] = true
             report["guest_ready_ms"] = elapsed()
         }
+        if req.project != nil && !projectStarted && text.contains("COCOON_HELPER_READY\n") {
+            projectStarted = true
+            connectProject()
+        }
         if report["guest_done"] as? Bool != true && text.contains("COCOON_DONE:" + req.token + "\n") {
             report["guest_done"] = true
             report["guest_done_ms"] = elapsed()
             stop("guest_done")
+        }
+    }
+
+    func connectProject() {
+        guard let socket = vm?.socketDevices.first as? VZVirtioSocketDevice else { stop("missing_vsock"); return }
+        socket.connect(toPort: 1024) { result in
+            switch result {
+            case .failure(let error):
+                self.report["transport_error"] = error.localizedDescription
+                self.stop("transport_error")
+            case .success(let connection):
+                let requests = self.projectRequests
+                DispatchQueue.global().async {
+                    let result = Result { try exchangeProject(connection, requests: requests) }
+                    self.queue.async {
+                        guard !self.stopping else { return }
+                        switch result {
+                        case .success(let responses):
+                            self.report["guest_transport"] = responses
+                            self.stop("project_complete")
+                        case .failure(let error):
+                            self.report["transport_error"] = error.localizedDescription
+                            self.stop("transport_error")
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -248,7 +298,7 @@ do {
     let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     let allowed = Set(["kernel", "initrd", "token", "memoryMiB", "seconds"])
     let diskFields = Set(["rootDisk", "diskMode", "payload"])
-    guard let fields = fields, Set(fields.keys) == allowed || Set(fields.keys) == allowed.union(diskFields) else {
+    guard let fields = fields, Set(fields.keys) == allowed || Set(fields.keys) == allowed.union(diskFields) || Set(fields.keys) == allowed.union(diskFields).union(["project"]) else {
         throw NSError(domain: "unknown or missing request fields", code: 1)
     }
     let req = try JSONDecoder().decode(Request.self, from: data)
@@ -257,13 +307,16 @@ do {
         throw NSError(domain: "invalid experimental request", code: 1)
     }
     if let disk = req.rootDisk {
-        guard disk.hasPrefix("/"), let mode = req.diskMode, ["write", "read"].contains(mode),
+        guard disk.hasPrefix("/"), let mode = req.diskMode, ["write", "read", "project"].contains(mode),
               let payload = req.payload, payload.count == 32,
               payload.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw NSError(domain: "invalid disk fixture request", code: 1)
         }
     } else if req.diskMode != nil || req.payload != nil || fields.keys.contains("rootDisk") {
         throw NSError(domain: "incomplete disk fixture request", code: 1)
+    }
+    guard (req.diskMode == "project") == (req.project != nil), req.project == nil || req.project!.hasPrefix("/") else {
+        throw NSError(domain: "invalid project fixture request", code: 1)
     }
     runner.queue.async { runner.begin(req) }
     dispatchMain()

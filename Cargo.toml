@@ -1,6 +1,6 @@
 [workspace]
-members = ["src/cocoon", "src/runtime", "src/host", "src/platform", "src/guest-fixture"]
-default-members = ["src/cocoon", "src/runtime", "src/host", "src/platform", "src/guest-fixture"]
+members = ["src/cocoon", "src/runtime", "src/host", "src/platform", "src/guest-fixture", "src/guest-wire", "src/guest-helper"]
+default-members = ["src/cocoon", "src/runtime", "src/host", "src/platform", "src/guest-fixture", "src/guest-wire", "src/guest-helper"]
 resolver = "3"
 
 [workspace.package]
@@ -11,6 +11,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+cocoon-guest-wire = { path = "src/guest-wire" }
 cocoon-platform = { path = "src/platform" }
 cocoon-runtime = { path = "src/runtime" }
 cocoon-host = { path = "src/host" }

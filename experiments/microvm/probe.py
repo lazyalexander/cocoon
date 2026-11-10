@@ -108,8 +108,10 @@ def build(linker):
     subprocess.run([linker, "-static", "--strip-all", "-e", "_start", "-z", "max-page-size=4096",
                     str(BUILD / "init.o"), "-o", str(BUILD / "init")], check=True, timeout=30)
     check_elf((BUILD / "init").read_bytes())
+    combined = BUILD / "main.swift"
+    combined.write_text((ROOT / "runner.swift").read_text() + "\n" + (ROOT / "ProjectChannel.swift").read_text())
     subprocess.run(["/usr/bin/swiftc", "-swift-version", "5", "-O", "-module-cache-path",
-                    str(BUILD / "modules"), str(ROOT / "runner.swift"), "-o", str(BUILD / "cocoon-vz"),
+                    str(BUILD / "modules"), str(combined), "-o", str(BUILD / "cocoon-vz"),
                     "-framework", "Virtualization"], check=True, timeout=180)
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements",
                     str(ROOT.parent / "macos-preflight/entitlements.plist"), str(BUILD / "cocoon-vz")],

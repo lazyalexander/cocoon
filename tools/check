@@ -2,6 +2,7 @@
 # Portable source checks; deliberately does not boot a VM or download a kernel.
 set -eu
 cd "$(dirname "$0")/.."
+python3 tools/check_docs.py
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --locked --all-targets -- -D warnings

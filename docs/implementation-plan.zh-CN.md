@@ -75,3 +75,8 @@ M1 无磁盘进展：固定 Debian 内核在 128 MiB 下通过输入输出、期
 
 固定 Rust ext4 根磁盘 fixture 已通过十轮持久化（二十次启动），包含权限、根与
 执行文件检查和确认停止。Debian 用户空间、生产 helper 及完整 v0.1 验收仍待完成。
+
+下一步离线闭环已实现：Rust guest-wire crate 与 Linux helper、固定来源的最小 shell
+用户态、vsock 通道和受控产物接收。三次真实固定项目启动通过，见
+[项目实验](../experiments/microvm/PROJECT.zh-CN.md)。这不代表生产 helper、外部授权、
+完整 Debian、恢复或回滚/分支验收已完成。

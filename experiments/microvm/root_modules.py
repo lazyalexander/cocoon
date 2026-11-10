@@ -20,9 +20,14 @@ SOURCES = {
 }
 
 
-def modules():
+PROJECT_PACKAGE = "linux-image-6.12.107+deb13-arm64_6.12.107-1_arm64.deb"
+PROJECT_SOURCE = ("https://deb.debian.org/debian/pool/main/l/linux-signed-arm64/" + PROJECT_PACKAGE, "20c92f3f97dd466e0400a6fcb792bde85af842fbb5e8b471370065e3de9d9fc9")
+
+def modules(project=False):
     files = {}
-    for name, (_, expected) in SOURCES.items():
+    sources = dict(SOURCES)
+    if project: sources[PROJECT_PACKAGE] = PROJECT_SOURCE
+    for name, (_, expected) in sources.items():
         path = BUILD / "debian" / name
         if digest(path) != expected:
             raise ValueError("module source digest mismatch")
@@ -62,18 +67,23 @@ def modules():
     # ext4 requests this crypto algorithm dynamically; it is not a depends= edge.
     add("crc32c_generic")
     add("ext4")
+    if project: add("vmw_vsock_virtio_transport")
     return [(name,files[name]) for name in order]
 
 
 if __name__ == "__main__":
     (BUILD / "debian").mkdir(parents=True,exist_ok=True)
-    for name,(url,expected) in SOURCES.items():
+    import sys
+    sources = dict(SOURCES)
+    project = "--project" in sys.argv[1:]
+    if project: sources[PROJECT_PACKAGE] = PROJECT_SOURCE
+    for name,(url,expected) in sources.items():
         path = BUILD / "debian" / name
         if not path.exists():
             with urllib.request.urlopen(url,timeout=30) as stream:
-                data=stream.read(64*1024*1024+1)
-            if len(data)>64*1024*1024 or hashlib.sha256(data).hexdigest()!=expected:
+                data=stream.read(128*1024*1024+1)
+            if len(data)>128*1024*1024 or hashlib.sha256(data).hexdigest()!=expected:
                 raise ValueError("module source size/digest mismatch")
             with path.open("xb") as output: output.write(data)
         if digest(path)!=expected: raise ValueError("existing module source mismatch")
-    print(json.dumps({"kernel_version":VERSION,"modules":[name for name,_ in modules()],"guest_boot_tested":False}))
+    print(json.dumps({"kernel_version":VERSION,"modules":[name for name,_ in modules(project)],"guest_boot_tested":False}))

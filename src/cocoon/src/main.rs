@@ -57,6 +57,11 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             if result["passed"] != true { println!("{}", serde_json::to_string_pretty(&result)?); return Err("persistence acceptance failed; inspect original boot before further action".into()); }
             result
         }
+        ["experiment", "project", id, runner] => {
+            let result = manager.project_boot(Uuid::parse_str(id)?.into(), Path::new(runner))?;
+            if result["passed"] != true { println!("{}", serde_json::to_string_pretty(&result)?); return Err("project acceptance failed; reconcile original boot before further action".into()); }
+            result
+        }
         ["vm", "start", id] => { manager.start(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
         ["operations"] => serde_json::to_value(manager.operations()?)?,
         _ => return Err("unknown host command; supported: image import/show, vm create/list/show/start, operations".into()),

@@ -99,3 +99,9 @@ is inferred from disk-clone or local-transfer measurements.
 The fixed Rust ext4-root fixture now passed ten persistence cycles (20 boots),
 including permissions, root/executable checks and confirmed stops. Debian
 userland, production helper and broader v0.1 acceptance remain pending.
+
+The next offline vertical slice is implemented: a Rust guest-wire crate and Linux
+helper, minimal pinned shell userland, vsock transport and controlled artifact
+receipt. Three real fixed-project boots passed. See the [project experiment](../experiments/microvm/PROJECT.md).
+This does not close production helper, external grants, complete Debian, recovery
+or rollback/branch gates.

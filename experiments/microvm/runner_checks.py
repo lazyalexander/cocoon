@@ -87,6 +87,23 @@ class RunnerProtocolTests(unittest.TestCase):
                 report = self.response(json.dumps({**base, **change}).encode())
                 self.assertNotEqual(report["status"], "invalid_request")
 
+    def test_existing_snapshot_destination_refuses_before_vm_or_side_effects(self):
+        with tempfile.TemporaryDirectory(prefix="cocoon-snapshot-request-") as directory:
+            state = pathlib.Path(directory) / "state.vz"
+            state.write_bytes(b"existing")
+            request = {"kernel": "/unused-kernel", "initrd": "/unused-initrd",
+                       "token": "a" * 32, "memoryMiB": 512, "seconds": 1,
+                       "snapshotMode": "save", "snapshotPath": str(state)}
+            path = pathlib.Path(directory) / "request.json"
+            path.write_text(json.dumps(request))
+            result = subprocess.run([str(BINARY), str(path)], capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 2)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["status"], "snapshot_setup_failed")
+            self.assertNotIn("start_requested_ms", report)
+            self.assertEqual(state.read_bytes(), b"existing")
+            self.assertFalse(pathlib.Path(str(state) + ".machine-id").exists())
+
     def test_malformed_missing_and_oversized_requests_refuse(self):
         for raw in [b"[]", b"{}", b"not-json", b" " * 16385]:
             with self.subTest(length=len(raw)):

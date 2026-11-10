@@ -263,9 +263,10 @@ def snapshot_api():
         ["/usr/bin/swiftc", "-swift-version", "5", "-typecheck",
          str(ROOT / "snapshot_api_probe.swift"), "-framework", "Virtualization"],
         capture_output=True, text=True, timeout=60)
+    diagnostic = result.stderr.replace(str(ROOT), "<workspace>").replace(str(pathlib.Path.home()), "<home>")
     report = {"schema": "cocoon-snapshot-api-probe-v1",
               "api_available": result.returncode == 0,
-              "compile_error": "" if result.returncode == 0 else result.stderr[-16384:],
+              "compile_error": "" if result.returncode == 0 else diagnostic[-16384:],
               "guest_boot_tested": False}
     print(json.dumps(report, indent=2))
     return 0 if result.returncode == 0 else 2
@@ -273,12 +274,20 @@ def snapshot_api():
 
 def snapshot_marker(report, name):
     prefix = name + ":"
+    matches = []
     for line in report.get("serial", "").splitlines():
         if line.startswith(prefix):
             parts = line.split(":")
             if len(parts) == 4:
-                return parts[1], parts[2], parts[3]
-    return None
+                matches.append((parts[1], parts[2], parts[3]))
+    if len(matches) != 1:
+        return None
+    token, counter, nonce = matches[0]
+    hexadecimal = set("0123456789abcdef")
+    if (len(token) != 32 or not set(token) <= hexadecimal or not counter.isdigit()
+            or len(nonce) != 32 or not set(nonce) <= hexadecimal):
+        return None
+    return matches[0]
 
 
 def verify_snapshot(save, restore, snapshot_bytes, disk_before, disk_after):

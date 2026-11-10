@@ -201,3 +201,26 @@ automatic suspension, pipeline policy, artifact custody, adversarial isolation, 
 parallel snapshot restore. Protocol tests alone do not establish VM support; the
 real guest counter, disk digest, process boundary, and framework termination
 checks are required.
+
+### Snapshot negative acceptance
+
+`snapshot_faults.py` exercises real VMs rather than synthetic runner evidence:
+
+```sh
+python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --case corrupt-state
+python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --case wrong-machine-id
+python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --case cold-boot
+python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --case double-restore
+```
+
+Each case uses a new VM, disk, and state file. Corrupt state and wrong machine
+identity must be rejected; a complete cold-boot sequence must fail resume
+verification even though the guest itself exits normally; a second restore must
+fail at the runner's exclusive restore claim. A failed or crashed restore consumes
+the claim, so unknown outcomes require reconciliation rather than replay.
+
+All four negative cases passed on the same macOS version. A subsequent three of
+three normal cross-process samples also passed with exclusive restore claims.
+These tests do not establish protection from a trusted macOS user who can alter
+or delete private state, and do not replace production checkpoint authentication,
+WAL recovery, or fault-injection qualification.

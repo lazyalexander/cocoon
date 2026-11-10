@@ -137,6 +137,9 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         let platform = VZGenericPlatformConfiguration()
         do {
             if req.snapshotMode == "save", let path = req.snapshotPath {
+                guard !FileManager.default.fileExists(atPath: path) else {
+                    throw NSError(domain: "snapshot destination already exists", code: 1)
+                }
                 let identifier = VZGenericMachineIdentifier()
                 try identifier.dataRepresentation.write(to: URL(fileURLWithPath: path + ".machine-id"),
                                                         options: [.withoutOverwriting])
@@ -205,6 +208,15 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         report["start_requested_ms"] = elapsed()
         queue.asyncAfter(deadline: .now() + req.seconds) { self.stop("deadline") }
         if req.snapshotMode == "restore", let path = req.restorePath {
+            let claim = URL(fileURLWithPath: path + ".restore-claimed")
+            do {
+                try Data().write(to: claim, options: [.withoutOverwriting])
+            } catch {
+                report["snapshot_error"] = "snapshot restore was already claimed or cannot be claimed"
+                finish("snapshot_restore_claimed", 2)
+                return
+            }
+            report["snapshot_restore_claimed"] = true
             machine.restoreMachineStateFrom(url: URL(fileURLWithPath: path)) { error in
                 guard error == nil else {
                     self.report["snapshot_error"] = error!.localizedDescription

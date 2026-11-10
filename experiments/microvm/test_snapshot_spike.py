@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import io
 import json
 import pathlib
 import subprocess
@@ -28,6 +29,18 @@ class SnapshotApiTests(unittest.TestCase):
         if not report["api_available"]:
             self.assertTrue(report["compile_error"])
             self.assertEqual(result.returncode, 2)
+
+    def test_compile_error_redacts_workspace_and_home_paths(self):
+        diagnostic = f"{ROOT}/snapshot_api_probe.swift: error near {pathlib.Path.home()}/private"
+        completed = subprocess.CompletedProcess(["swiftc"], 1, "", diagnostic)
+        output = io.StringIO()
+        with mock.patch.object(probe.subprocess, "run", return_value=completed), \
+                mock.patch("sys.stdout", output):
+            self.assertEqual(probe.snapshot_api(), 2)
+        report = json.loads(output.getvalue())
+        self.assertNotIn(str(ROOT), report["compile_error"])
+        self.assertNotIn(str(pathlib.Path.home()), report["compile_error"])
+        self.assertIn("error", report["compile_error"])
 
 
 class SnapshotAcceptanceTests(unittest.TestCase):
@@ -80,6 +93,15 @@ class SnapshotAcceptanceTests(unittest.TestCase):
                 save, restore = self.valid_reports()
                 restore["serial"] = serial
                 self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
+
+    def test_rejects_malformed_or_duplicate_nonce_evidence(self):
+        save, restore = self.valid_reports()
+        save["serial"] = save["serial"].replace("0123456789abcdef0123456789abcdef", "same")
+        restore["serial"] = restore["serial"].replace("0123456789abcdef0123456789abcdef", "same")
+        self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
+        save, restore = self.valid_reports()
+        restore["serial"] = restore["serial"] + restore["serial"]
+        self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
 
     def test_timeout_preserves_unknown_outcome_without_restore(self):
         with tempfile.TemporaryDirectory(prefix="cocoon-snapshot-test-") as directory:

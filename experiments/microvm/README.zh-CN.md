@@ -166,3 +166,22 @@ ext4 日志重放）单独记录，不视为检查点损坏。机器标识保存
 本实验不实现生产租约、检查点/WAL 发布、主动挂起、流水线策略、产物保管、对抗性
 隔离或并行快照恢复。协议测试本身不证明 VM 支持；必须同时通过真实 guest 计数器、
 磁盘摘要、进程边界和框架终止检查。
+
+### 快照负面验收
+
+`snapshot_faults.py` 使用真实 VM，而非合成 runner 证据：
+
+```sh
+python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --case corrupt-state
+python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --case wrong-machine-id
+python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --case cold-boot
+python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-BUILD_ID --kernel /absolute/private/linux --case double-restore
+```
+
+每个用例使用新的 VM、磁盘和状态文件。损坏状态和错误机器标识必须被拒绝；完整
+冷启动序列即使 guest 自身正常退出，也不能通过恢复验证；第二次恢复必须在 runner
+的独占恢复认领处失败。恢复失败或崩溃会消耗认领，未知结果必须核对而非重放。
+
+四个负面对例在同一 macOS 版本上全部通过；随后三个正常跨进程样本也在启用独占恢复
+认领后全部通过。这些测试不证明能够防御可修改或删除私有状态的可信 macOS 用户，
+也不能替代生产检查点认证、WAL 恢复或故障注入资格验收。

@@ -77,3 +77,7 @@ Before committing: Rust tests, Clippy with warnings denied, formatting checks,
 Python harness tests and native protocol checks. Real macOS execution is required
 before qualifying any backend. Do not publish credentials, private reports or
 operator paths; publishing requires explicit authorization.
+
+Diskless M1 progress: pinned Debian kernel passed roundtrip, deadline and cancel
+at 128 MiB, plus 30/30 repeated roundtrips. See the experiment README for the
+measurement limits. Persistent-root M1 acceptance remains pending.

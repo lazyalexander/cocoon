@@ -36,7 +36,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    use cocoon_runtime::manager::{FinishPolicy, Manager};
+    use cocoon_host::{FinishPolicy, Manager};
     use std::path::Path;
     use uuid::Uuid;
     if args.len() < 2 {

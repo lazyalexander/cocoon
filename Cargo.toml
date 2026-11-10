@@ -1,18 +1,36 @@
-[package]
-name = "cocoon-runtime"
+[workspace]
+members = ["src/cocoon", "src/runtime", "src/host"]
+default-members = ["src/cocoon", "src/runtime", "src/host"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-publish = false
-description = "Bounded execution contracts for agent workloads"
+rust-version = "1.98"
 license = "MIT"
+publish = false
 
-[dependencies]
+[workspace.dependencies]
+cocoon-runtime = { path = "src/runtime" }
+cocoon-host = { path = "src/host" }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.11.1"
 uuid = { version = "1.20.0", features = ["v4", "serde"] }
 
-[[bin]]
-name = "cocoon"
-path = "src/main.rs"
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = "none"
+
+[profile.ci]
+inherits = "dev"
+incremental = false

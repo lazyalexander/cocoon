@@ -40,13 +40,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
-name = "cocoon-runtime"
+name = "cocoon"
+version = "0.1.0"
+dependencies = [
+ "cocoon-host",
+ "cocoon-runtime",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "cocoon-host"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "cocoon-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "uuid",
 ]
 

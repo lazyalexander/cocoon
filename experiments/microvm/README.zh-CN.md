@@ -85,7 +85,7 @@ virtio-console。实验计算内核摘要并只读使用，不重新分发内核
 构建或配置拒绝耗时不作为 guest 启动性能。与 Firecracker 比较时，须对齐就绪定义、
 guest 内核、硬件环境和缓存条件；当前不宣称性能相当。
 
-## 当前观察
+## 较早的不兼容内核观察
 
 ARM64 guest init 和优化原生启动器均已构建成功。受管理执行环境拒绝框架配置，
 且读取两项宿主能力 sysctl 均返回 EPERM。使用者在普通终端运行 `doctor` 时，
@@ -105,5 +105,34 @@ guest 未发出就绪标记：所用 LinuxKit 内核关闭了 `CONFIG_BLK_DEV_IN
 16 KiB 的请求。macOS CI 构建、签名启动器并运行这些检查，不启动或认证 guest。
 Python 工具的进程测试同样不能证明 VM 取消能力已有效。
 
-当前配置的设备比早期 1 GiB 预检更少，但这不证明 128 MiB guest 可用，也不代表
-达到 Firecracker 的安全保障。macOS 宿主进程隔离和恶意 guest 输出防护仍须单独验收。
+此前较少的设备配置本身不证明 guest 可用，也不代表达到 Firecracker 的安全保障。macOS 宿主进程隔离和恶意 guest 输出防护仍须单独验收。
+
+## 固定 Debian 内核与真实无磁盘验收
+
+显式下载工具获取 Debian trixie 安装器 ARM64 内核：
+
+```sh
+python3 experiments/microvm/fetch_kernel.py
+python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/debian/linux --case roundtrip
+python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/debian/linux --case deadline --seconds 2
+python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/debian/linux --case cancel
+python3 experiments/microvm/probe.py benchmark --kernel experiments/microvm/build/debian/linux --samples 30
+```
+
+下载须显式执行，上限为 128 MiB，SHA-256 必须为
+`9c37ace54ef7e1919411fd912e9f34d6982ddd7f4c8ef3c8aee56f4c4d70db67`。
+官方来源 URL 记录在 `fetch_kernel.py`；上游 `current` 改变后工具拒绝下载结果，
+不会自动改变摘要。已有操作员文件只校验、不覆盖。摘要已与 Debian HTTPS 提供的
+SHA256SUMS 对照，但未验证独立签名。内核保留 Linux/Debian 许可，仅存入忽略的
+`build/`，不随仓库分发。无需 Debian 安装器根文件系统，guest 仍运行 Cocoon 的
+独立 C init。
+
+在 Apple Silicon macOS 27.0.1 上、管理沙箱外，1 vCPU、128 MiB 配置通过了输入
+输出、两秒期限停止和 SIGTERM 取消。另有一次 512 MiB 输入输出通过。各场景均通过
+所需的 guest 就绪、预期输出（适用时）和框架终止检查。
+
+128 MiB 的 30 次独立重复输入输出全部通过（30/30）。从 runner 初始化起计，guest
+就绪中位数为 239.875 ms，最近秩 P95 为 245.762 ms。未清空缓存。这只是固定工作
+负载的无磁盘测量，不是冷缓存、完整 Linux 开发环境、总内存核算或 Firecracker
+对比。原始报告保留在忽略的私有 `runs/`。可写根磁盘持久化、guest helper 和生产
+所有权恢复仍未实现或验收。

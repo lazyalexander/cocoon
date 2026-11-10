@@ -6,10 +6,10 @@ Cocoon is an independent execution runtime project designed for agent workloads.
 The first target is headless Linux ARM64 execution on Apple Silicon macOS.
 an-agent is the intended first consumer, not a runtime dependency.
 
-**Current status: contract prototype and a compiled minimal macOS VM experiment.
-An operator-run VM starts Linux and confirms host stop, but the supplied kernel
-cannot load initramfs. Guest workload acceptance is still pending;
-no production execution backend is qualified.**
+**Current status: persistent host registration foundation and a real diskless
+macOS VM experiment. With a pinned Debian ARM64 kernel, roundtrip, deadline and
+cancellation passed at 128 MiB; 30 repeated roundtrips passed. The persistent-disk
+production backend is not implemented or qualified.**
 
 ## Model
 
@@ -44,22 +44,21 @@ The minimal boot experiment is documented in
 [`experiments/microvm/README.md`](experiments/microvm/README.md). It builds a
 freestanding ARM64 Linux init and an optimized native framework runner with no
 OCI package dependency. It includes input/output, deadline-stop acceptance and
-a repeated-boot benchmark harness. All guest acceptance is still pending.
+a repeated-boot benchmark harness. Diskless guest acceptance has passed; persistent-root acceptance is pending.
 
 The kernel-free `doctor` command records capability-read errors separately from
 hardware support. Native runner protocol checks run on macOS CI without booting
-a guest. Cancellation and bounded serial handling remain experimental until real
-VM acceptance succeeds.
+a guest. Cancellation passed the bounded diskless guest experiment; adversarial output
+and production supervision remain separate qualification work.
 
 The earlier empty-context probe remains under `experiments/macos-preflight/`.
 Neither experiment depends on an-agent or starts existing Docker/Lima machines.
 
 ## Next acceptance gate
 
-Select a compatible minimal Linux ARM64 kernel and prove one owned VM can start,
-run offline, return
-the fixed transformed input and stop at a deadline. The current experiment uses
-Virtualization.framework directly; OCI management is deferred.
+Add a writable Linux root filesystem and prove modifications survive a confirmed
+stop and restart. The current qualified experiment has no disk and runs a fixed
+workload. It uses Virtualization.framework directly; OCI management is deferred.
 Only then connect a real backend to admission, durable ownership, reconciliation
 and artifact custody. No native fallback is allowed when VM execution is selected.
 
@@ -78,3 +77,5 @@ dependencies retain their own licenses; they are not relicensed by Cocoon.
 See the [implementation plan and current delivery status](docs/implementation-plan.md).
 The trusted host CLI now supports persistent image and VM registration; VM execution
 remains unavailable through this CLI.
+
+[Rust-first workspace architecture and contribution workflow](docs/architecture.md) · [Contributing](CONTRIBUTING.md)

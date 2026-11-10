@@ -1,7 +1,7 @@
 use super::*;
 
 fn task() -> Task {
-    serde_json::from_str(include_str!("../examples/task.json")).unwrap()
+    serde_json::from_str(include_str!("../../../examples/task.json")).unwrap()
 }
 
 #[test]

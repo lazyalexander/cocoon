@@ -1,4 +1,4 @@
-use cocoon_runtime::manager::{FinishPolicy, Manager};
+use cocoon_host::{FinishPolicy, Manager};
 use std::{fs, path::PathBuf};
 use uuid::Uuid;
 struct Sandbox(PathBuf);

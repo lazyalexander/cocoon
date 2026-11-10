@@ -6,6 +6,7 @@ import pathlib
 import contextlib
 import io
 import unittest
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -80,10 +81,28 @@ class GuestImageTests(unittest.TestCase):
                 "#!/usr/bin/env python3\nimport signal, time, sys\n"
                 "def stop(*_):\n    print('stopped', flush=True)\n    sys.exit(0)\n"
                 "signal.signal(signal.SIGTERM, stop)\nprint('ready', flush=True)\n"
+                "with open(sys.argv[1], 'w') as ready: ready.write('ready')\n"
                 "while True: time.sleep(0.01)\n"
             )
             child.chmod(0o700)
-            result = run_guest(child, pathlib.Path(directory) / "unused", 2, True)
+            ready = pathlib.Path(directory) / "ready"
+            spawn = probe.subprocess.Popen
+
+            def spawn_ready(*args, **kwargs):
+                process = spawn(*args, **kwargs)
+                deadline = time.monotonic() + 10
+                while not ready.exists():
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        process.kill()
+                        process.communicate()
+                        raise AssertionError("test child did not install signal handler")
+                    time.sleep(0.01)
+                return process
+
+            # Start the cancellation clock only after this test fixture is ready.
+            # Production VM readiness acceptance remains unchanged.
+            with patch.object(probe.subprocess, "Popen", side_effect=spawn_ready):
+                result = run_guest(child, ready, 2, True)
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout, b"ready\nstopped\n")
 

@@ -6,9 +6,9 @@ Cocoon 是面向智能体工作负载设计的独立执行运行时项目。首�
 Apple Silicon macOS 上无头运行 Linux ARM64。an-agent 是预期的首个使用者，
 不属于运行时依赖。
 
-**当前状态：任务契约原型，以及已经编译的最小 macOS VM 实验。
-使用者已启动 Linux 并由宿主确认停止，但所用内核不支持 initramfs；
-guest 工作负载验收仍未通过，尚无通过资格验收的生产执行后端。**
+**当前状态：持久化宿主注册基础，以及已完成真实启动的无磁盘 macOS VM 实验。
+固定 Debian ARM64 内核在 128 MiB 下通过输入输出、期限停止和取消验收，30 次重复
+输入输出全部通过。持久根磁盘生产后端尚未实现或通过资格验收。**
 
 ## 模型
 
@@ -41,20 +41,18 @@ cargo run --offline -- plan examples/task.json
 [`experiments/microvm/README.zh-CN.md`](experiments/microvm/README.zh-CN.md)。
 它构建不依赖标准运行库的 ARM64 Linux init，以及经过优化的原生框架启动器，
 不依赖 OCI 管理包。实验包含输入输出、期限停止验收与重复启动基准工具。
-所有 guest 验收仍未通过。
+无磁盘 guest 验收已通过，持久根磁盘验收仍待完成。
 
 无须内核的 `doctor` 命令将能力信息读取错误与硬件支持情况分开记录。
-原生启动器协议检查在 macOS CI 上运行，不启动 guest。取消和有界串口处理仍属
-实验能力，必须通过真实 VM 验收才能宣称有效。
+原生启动器协议检查在 macOS CI 上运行，不启动 guest。取消已通过有界无磁盘实验；恶意输出和生产监督仍须单独验收。
 
 较早的空上下文预检保留在 `experiments/macos-preflight/`。
 两个实验均不依赖 an-agent，也不会启动现有 Docker 或 Lima 虚拟机。
 
 ## 下一阶段验收
 
-选择兼容的最小 Linux ARM64 内核，
-证明一个归属明确的 VM 能启动、离线运行、返回固定输入的转换结果并在期限到达后停止。
-当前实验直接使用 Virtualization.framework；OCI 管理延后。
+加入可写 Linux 根文件系统，证明修改在确认停止和重启后保留。
+当前通过验收的是无磁盘固定工作负载，直接使用 Virtualization.framework；OCI 管理延后。
 通过这些验收后，再接入真实准入、持久监督、故障对账与产物保管机制。
 选择 VM 执行后，不允许自动退回宿主原生执行。
 
@@ -70,3 +68,5 @@ Cocoon 原创源码与文档采用 [MIT 协议](LICENSE)。用户提供的 Linux
 
 参见[实施计划与当前交付状态](docs/implementation-plan.zh-CN.md)。可信宿主 CLI 已支持
 持久化镜像和 VM 注册；该 CLI 尚不能执行 VM。
+
+[Rust 优先 workspace 架构与贡献流程](docs/architecture.zh-CN.md) · [Contributing](CONTRIBUTING.zh-CN.md)

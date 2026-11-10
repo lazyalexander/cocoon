@@ -1,0 +1,8 @@
+#!/bin/sh
+# Portable source checks; deliberately does not boot a VM or download a kernel.
+set -eu
+cd "$(dirname "$0")/.."
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --locked --all-targets -- -D warnings
+python3 -m unittest discover -s experiments/microvm -p 'test_*.py' -v

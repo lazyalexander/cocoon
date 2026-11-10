@@ -100,7 +100,7 @@ first failure. Build and configuration refusal are never reported as guest boot
 performance. Compare with Firecracker only using matching readiness definitions,
 guest kernels, hardware context and cache conditions; no parity is claimed.
 
-## Current observation
+## Earlier incompatible-kernel observation
 
 The ARM64 guest init and optimized native runner build successfully. The managed
 execution context refuses framework configuration and cannot read the two host
@@ -127,6 +127,41 @@ signs the runner and runs those checks; it does not boot or qualify a guest.
 Python harness process tests likewise do not establish VM cancellation support.
 
 The implementation configures fewer devices than the earlier 1 GiB preflight,
-but this does not establish working 128 MiB guests or Firecracker-equivalent
+but device count alone does not establish guest acceptance or Firecracker-equivalent
 security. macOS process containment and protection against hostile guest output
 remain separate qualification work.
+
+## Pinned Debian kernel and real diskless acceptance
+
+The explicit download helper retrieves a Debian trixie installer ARM64 kernel:
+
+```sh
+python3 experiments/microvm/fetch_kernel.py
+python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/debian/linux --case roundtrip
+python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/debian/linux --case deadline --seconds 2
+python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/debian/linux --case cancel
+python3 experiments/microvm/probe.py benchmark --kernel experiments/microvm/build/debian/linux --samples 30
+```
+
+The download is opt-in, capped at 128 MiB, and requires SHA-256
+`9c37ace54ef7e1919411fd912e9f34d6982ddd7f4c8ef3c8aee56f4c4d70db67`.
+The official source URL is recorded in `fetch_kernel.py`; upstream `current` can
+move, in which case the helper fails rather than repinning. Existing operator
+files are verified, never replaced. The pin was compared with Debian's HTTPS
+SHA256SUMS; no detached signature verification is claimed. The kernel remains
+under its own Linux/Debian licenses, is stored only in ignored `build/`, and is
+not redistributed by this repository. Debian's installer root filesystem is
+not needed: the experiment still runs Cocoon's freestanding C init.
+
+Real runs on Apple Silicon macOS 27.0.1, outside the managed sandbox, passed
+roundtrip, a two-second deadline and SIGTERM cancellation with 1 vCPU and
+128 MiB. A separate 512 MiB roundtrip also passed. All required guest readiness,
+expected output (where applicable) and framework termination checks passed.
+
+Thirty independent repeated roundtrips at 128 MiB passed (30/30). Guest-ready
+median was 239.875 ms and nearest-rank P95 was 245.762 ms, measured from runner
+initialization. Caches were not flushed. These are fixed-workload diskless
+measurements, not cold-cache boots, full Linux development environments, total
+memory accounting or Firecracker comparisons. Raw reports remain private under
+ignored `runs/`. Writable-root persistence, guest helper access and production
+ownership recovery remain unimplemented and unqualified.

@@ -105,3 +105,21 @@ helper, minimal pinned shell userland, vsock transport and controlled artifact
 receipt. Three real fixed-project boots passed. See the [project experiment](../experiments/microvm/PROJECT.md).
 This does not close production helper, external grants, complete Debian, recovery
 or rollback/branch gates.
+
+## Experimental snapshot platform evidence
+
+On macOS 27.0.1 (26A434), the fixed 512 MiB Rust ext4 guest passed three of three
+real cross-process Virtualization.framework save/restore samples. Each sample
+saved state, confirmed the original runner stopped, restored in one new process,
+advanced a RAM-only counter exactly once, preserved the working-disk SHA-256, and
+confirmed final stop. State files were 24,121,344 bytes. Save-process wall times
+were 472.7–502.7 ms; restore-process wall times were 1,206.2–1,214.2 ms including
+a fixed one-second guest wait. These are not production budgets or complete memory
+accounting.
+
+The experiment persists and restores the generic machine identifier with the state
+file. It does not provide production checkpoint/WAL publication, leases, recovery,
+automatic suspension, or parallel restore. The next separate implementation gate
+is host-owned checkpoint and WAL custody integrated with the production lifecycle
+and lease model. Runtime memory snapshots remain outside v0.1 qualification until
+their mandatory acceptance criteria are explicitly added.

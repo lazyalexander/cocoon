@@ -220,3 +220,11 @@ Inspired by Firecracker's versioned
 [test methodology](https://github.com/firecracker-microvm/firecracker/blob/7a43eb7a20b34c4dbcc31574834810855413a58e/tests/README.md)
 and scoped verification practice. Thresholds and product scope here are Cocoon's
 own proposals, not upstream measurements or certifications.
+
+### Experimental snapshot evidence
+
+A fixed 512 MiB guest passed three sequential cross-process state save/restore
+samples on macOS 27.0.1 (26A434), with RAM-counter continuity, unchanged working
+disk digests, and confirmed termination. This is platform feasibility evidence,
+not v0.1 lifecycle, recovery, isolation, capacity, or performance qualification.
+The current exclusion of runtime memory snapshots remains in force.

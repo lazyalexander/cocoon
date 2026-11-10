@@ -65,3 +65,8 @@ GPU、GUI guest、实时内存快照及其他宿主平台不属于首阶段交�
 
 Cocoon 原创源码与文档采用 [MIT 协议](LICENSE)。用户提供的 Linux 内核和
 第三方依赖保留各自协议，不会因使用 Cocoon 而变更协议。
+
+## 原生 agent microVM 方向
+
+参见[实施计划与当前交付状态](docs/implementation-plan.zh-CN.md)。可信宿主 CLI 已支持
+持久化镜像和 VM 注册；该 CLI 尚不能执行 VM。

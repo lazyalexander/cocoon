@@ -176,3 +176,5 @@ impl Attempt {
 
 #[cfg(test)]
 mod tests;
+
+pub mod manager;

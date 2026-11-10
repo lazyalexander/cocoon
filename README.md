@@ -72,3 +72,9 @@ outside the first delivery scope.
 Cocoon's original source and documentation are licensed under the
 [MIT License](LICENSE). Operator-supplied Linux kernels and third-party
 dependencies retain their own licenses; they are not relicensed by Cocoon.
+
+## Native agent microVM direction
+
+See the [implementation plan and current delivery status](docs/implementation-plan.md).
+The trusted host CLI now supports persistent image and VM registration; VM execution
+remains unavailable through this CLI.

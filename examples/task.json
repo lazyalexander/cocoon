@@ -1,0 +1,14 @@
+{
+  "schema": "cocoon-task-v1",
+  "caller": { "subject": "example-agent", "kind": "agent" },
+  "image": "example.invalid/cocoon-demo@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "argv": ["/bin/sh", "-c", "printf 'hello from cocoon\\n'"],
+  "limits": {
+    "vcpus": 2,
+    "memory_mib": 1024,
+    "writable_mib": 2048,
+    "wall_seconds": 120,
+    "output_bytes": 1048576
+  },
+  "network": false
+}

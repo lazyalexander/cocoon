@@ -224,7 +224,7 @@ own proposals, not upstream measurements or certifications.
 ### Experimental snapshot evidence
 
 A fixed 512 MiB guest passed three sequential cross-process state save/restore
-samples on macOS 27.0.1 (26A434), with RAM-counter continuity, unchanged working
-disk digests, and confirmed termination. This is platform feasibility evidence,
+samples on macOS 27.0.1 (26A434), with random RAM-nonce and counter continuity,
+matching disk digests at restore admission, and confirmed termination. This is platform feasibility evidence,
 not v0.1 lifecycle, recovery, isolation, capacity, or performance qualification.
 The current exclusion of runtime memory snapshots remains in force.

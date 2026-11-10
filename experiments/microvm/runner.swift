@@ -127,6 +127,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         report["framework_supported"] = VZVirtualMachine.isSupported
         if req.snapshotMode != nil {
             report["snapshot_saved"] = false
+            report["snapshot_restored"] = false
         }
         let loader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: req.kernel))
         loader.initialRamdiskURL = URL(fileURLWithPath: req.initrd)
@@ -210,6 +211,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
                     self.finish("snapshot_restore_failed", 2)
                     return
                 }
+                self.report["snapshot_restored"] = true
                 self.report["snapshot_restore_ms"] = self.elapsed()
                 machine.resume { result in
                     switch result {

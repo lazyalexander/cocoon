@@ -276,8 +276,8 @@ def snapshot_marker(report, name):
     for line in report.get("serial", "").splitlines():
         if line.startswith(prefix):
             parts = line.split(":")
-            if len(parts) == 3:
-                return parts[1], parts[2]
+            if len(parts) == 4:
+                return parts[1], parts[2], parts[3]
     return None
 
 
@@ -292,6 +292,10 @@ def verify_snapshot(save, restore, snapshot_bytes, disk_before, disk_after):
         errors.append("save guest not ready")
     if save.get("snapshot_saved") is not True:
         errors.append("snapshot not saved")
+    if restore.get("snapshot_restored") is not True:
+        errors.append("framework restore not confirmed")
+    if "COCOON_READY:" in restore.get("serial", ""):
+        errors.append("restore emitted a cold-boot marker")
     if snapshot_bytes <= 0:
         errors.append("snapshot missing or empty")
     if not disk_before or disk_before != disk_after:
@@ -302,6 +306,8 @@ def verify_snapshot(save, restore, snapshot_bytes, disk_before, disk_after):
         errors.append("snapshot continuity markers missing")
     elif ready[0] != resumed[0]:
         errors.append("snapshot token mismatch")
+    elif ready[2] != resumed[2]:
+        errors.append("guest RAM nonce mismatch")
     else:
         try:
             if int(resumed[1]) != int(ready[1]) + 1:
@@ -331,32 +337,45 @@ def snapshot(args):
                 "rootDisk": str(disk), "diskMode": "snapshot", "payload": token}
         pair = []
         disk_before = None
+        disk_at_restore = None
         for mode in ["save", "restore"]:
             if mode == "save":
                 extra = {"snapshotMode": "save", "snapshotPath": str(state)}
             else:
                 if pair[0]["exit_code"] != 0 or pair[0].get("snapshot_saved") is not True:
                     break
+                disk_at_restore = digest(disk)
                 extra = {"snapshotMode": "restore", "restorePath": str(state)}
             request = work / (mode + ".json")
             request.write_text(json.dumps({**base, **extra}))
             start = time.monotonic()
-            result = run_guest(binary, request, 60, False)
-            elapsed_ms = (time.monotonic() - start) * 1000
             try:
-                observed = json.loads(result.stdout)
-            except json.JSONDecodeError:
-                observed = {"error": "invalid runner JSON", "stdout": result.stdout.decode(errors="replace")}
-            observed.update(exit_code=result.returncode, serial=observed.get("guest_serial", ""),
-                            process_wall_ms=elapsed_ms)
-            (work / (mode + "-stderr.txt")).write_bytes(result.stderr)
+                result = run_guest(binary, request, 60, False)
+                elapsed_ms = (time.monotonic() - start) * 1000
+                stderr = result.stderr
+                try:
+                    observed = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    observed = {"error": "invalid runner JSON", "stdout": result.stdout.decode(errors="replace")}
+                observed["exit_code"] = result.returncode
+            except subprocess.TimeoutExpired as error:
+                elapsed_ms = (time.monotonic() - start) * 1000
+                stderr = error.stderr or b""
+                if isinstance(stderr, str):
+                    stderr = stderr.encode()
+                observed = {"status": "runner_timeout", "error": "runner watchdog expired",
+                            "exit_code": 3, "termination_confirmed": False}
+            observed.update(serial=observed.get("guest_serial", ""), process_wall_ms=elapsed_ms)
+            (work / (mode + "-stderr.txt")).write_bytes(stderr)
             pair.append(observed)
             if mode == "save":
                 disk_before = digest(disk)
+            if observed["status"] == "runner_timeout":
+                break
         disk_after = digest(disk)
         errors = verify_snapshot(pair[0], pair[1] if len(pair) == 2 else {},
                                  state.stat().st_size if state.exists() else 0,
-                                 disk_before, disk_after)
+                                 disk_before, disk_at_restore)
         report = {"sample": sample + 1, "save": pair[0],
                   "restore": pair[1] if len(pair) == 2 else None,
                   "snapshot_bytes": state.stat().st_size if state.exists() else 0,

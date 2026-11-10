@@ -144,12 +144,19 @@ mod guest {
         println!("COCOON_PERSIST:{mode}:{payload}:{token}");
         if mode == "snapshot" {
             let mut counter = u64::from_str_radix(&payload[..8], 16)?;
-            println!("COCOON_SNAPSHOT_READY:{token}:{counter}");
+            let mut random = [0_u8; 16];
+            // SAFETY: Linux ARM64 getrandom(278) receives a valid writable buffer;
+            // flags=0 requests cryptographically secure guest randomness.
+            if unsafe { syscall(278, random.as_mut_ptr(), random.len(), 0_i32) } != 16 {
+                return Err("cannot initialize snapshot nonce".into());
+            }
+            let nonce: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+            println!("COCOON_SNAPSHOT_READY:{token}:{counter}:{nonce}");
             std::io::stdout().flush()?;
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 counter += 1;
-                println!("COCOON_RESUMED:{token}:{counter}");
+                println!("COCOON_RESUMED:{token}:{counter}:{nonce}");
                 println!("COCOON_DONE:{token}");
                 std::io::stdout().flush()?;
             }

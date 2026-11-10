@@ -111,10 +111,11 @@ or rollback/branch gates.
 On macOS 27.0.1 (26A434), the fixed 512 MiB Rust ext4 guest passed three of three
 real cross-process Virtualization.framework save/restore samples. Each sample
 saved state, confirmed the original runner stopped, restored in one new process,
-advanced a RAM-only counter exactly once, preserved the working-disk SHA-256, and
-confirmed final stop. State files were 24,121,344 bytes. Save-process wall times
-were 472.7–502.7 ms; restore-process wall times were 1,206.2–1,214.2 ms including
-a fixed one-second guest wait. These are not production budgets or complete memory
+matched a random RAM-only nonce, advanced its counter exactly once, matched the
+working-disk SHA-256 at restore admission, and confirmed final stop. State files
+were 24,121,344 bytes. Save-process wall times were 5,505.2–5,561.0 ms;
+restore-process wall times were 1,206.9–1,219.9 ms including a fixed one-second
+guest wait; framework restore itself took 175.3–187.0 ms. These are not production budgets or complete memory
 accounting.
 
 The experiment persists and restores the generic machine identifier with the state

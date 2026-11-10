@@ -182,15 +182,18 @@ python3 experiments/microvm/probe.py snapshot --fixture /absolute/private/root-B
 `snapshot-api` performs a compile-only SDK check. The `snapshot` command boots a
 512 MiB fixed guest, persists and synchronizes a disk payload, pauses the VM,
 saves complete machine state, confirms the old runner stopped, and starts one new
-runner from that state. A RAM-only counter must advance exactly once across the
-restore and the working-disk SHA-256 must remain unchanged. The machine identifier
+runner from that state. A RAM-only random nonce must match and its counter must
+advance exactly once across the restore. The working-disk SHA-256 is checked again
+at restore admission; post-resume filesystem changes, including ext4 journal replay,
+are recorded rather than treated as checkpoint corruption. The machine identifier
 is stored beside the private state file and reused on restore. No cold-boot or
 native fallback is used, and failed samples are not replayed.
 
 On macOS 27.0.1 (26A434), three of three real cross-process samples passed. Each
-state file was 24,121,344 bytes. Save-process wall times were 472.7–502.7 ms;
-restore-process wall times were 1,206.2–1,214.2 ms, including the guest's fixed
-one-second wait before its resumed marker. These are fixed-workload measurements,
+state file was 24,121,344 bytes. Save-process wall times were 5,505.2–5,561.0 ms;
+restore-process wall times were 1,206.9–1,219.9 ms, including the guest's fixed
+one-second wait before its resumed marker. Framework restore itself took
+175.3–187.0 ms. These are fixed-workload measurements,
 not approved production budgets or total memory-release measurements.
 
 This spike does not implement production leases, checkpoint/WAL publication,

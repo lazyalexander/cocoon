@@ -16,6 +16,7 @@ import signal
 import threading
 import time
 import uuid
+import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parent
 BUILD = ROOT / "build"
@@ -57,6 +58,38 @@ def digest(path):
         for part in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(part)
     return h.hexdigest()
+
+
+def check_kernel(path):
+    """Reject known-incompatible Images; configuration is not boot evidence."""
+    data = path.read_bytes()
+    if data[56:60] != b"ARM\x64":
+        raise ValueError("kernel is not an uncompressed Linux ARM64 Image")
+    report = {"schema": "cocoon-kernel-check-v1", "kernel_sha256": digest(path),
+              "embedded_config": False, "compatibility": "unknown",
+              "guest_boot_tested": False}
+    offset = data.find(b"IKCFG_ST")
+    if offset < 0:
+        return report
+    # Kernel input is untrusted. Bound decompression before interpreting IKCONFIG.
+    decoder = zlib.decompressobj(31)
+    try:
+        config = decoder.decompress(data[offset + 8:], 2 * 1024 * 1024)
+        if not decoder.eof or not decoder.unused_data.startswith(b"IKCFG_ED"):
+            raise ValueError("invalid or oversized embedded kernel configuration")
+        lines = config.decode("utf-8").splitlines()
+    except (zlib.error, UnicodeDecodeError) as error:
+        raise ValueError("invalid embedded kernel configuration") from error
+    options = dict(line.split("=", 1) for line in lines
+                   if line.startswith("CONFIG_") and "=" in line)
+    required = ["CONFIG_BLK_DEV_INITRD", "CONFIG_RD_GZIP", "CONFIG_BINFMT_ELF",
+                "CONFIG_VIRTIO", "CONFIG_VIRTIO_CONSOLE"]
+    missing = [name for name in required if options.get(name) != "y"]
+    report.update(embedded_config=True, compatibility="incompatible" if missing else "candidate",
+                  required_options={name: options.get(name, "disabled") for name in required})
+    if missing:
+        report["error"] = "kernel requires built-in (=y): " + ", ".join(missing)
+    return report
 
 
 def build(linker):
@@ -137,11 +170,9 @@ def boot(args, emit=True):
     kernel = args.kernel.resolve(strict=True)
     if not kernel.is_file():
         raise ValueError("kernel must be a regular Linux ARM64 Image")
-    # Check Linux ARM64 Image magic, rather than misclassifying a compressed image.
-    with kernel.open("rb") as stream:
-        header = stream.read(64)
-    if header[56:60] != b"ARM\x64":
-        raise ValueError("kernel is not an uncompressed Linux ARM64 Image")
+    kernel_check = check_kernel(kernel)
+    if kernel_check["compatibility"] == "incompatible":
+        raise ValueError(kernel_check["error"])
     run_id = uuid.uuid4().hex
     runs = ROOT / "runs"
     runs.mkdir(exist_ok=True)
@@ -166,7 +197,8 @@ def boot(args, emit=True):
     request_path.write_text(json.dumps(request))
     preparation_start = time.monotonic()
     report = {"schema": "cocoon-microvm-acceptance-v1", "case": args.case,
-              "kernel_sha256": digest(kernel), "runner_sha256": digest(BUILD / "cocoon-vz"),
+              "kernel_sha256": kernel_check["kernel_sha256"], "kernel_check": kernel_check,
+              "runner_sha256": digest(BUILD / "cocoon-vz"),
               "initrd_sha256": digest(initrd), "initrd_bytes": initrd.stat().st_size,
               "passed": False}
     try:
@@ -228,6 +260,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor")
+    kernel_parser = commands.add_parser("check-kernel")
+    kernel_parser.add_argument("--kernel", required=True, type=pathlib.Path)
     compile_parser = commands.add_parser("build")
     compile_parser.add_argument("--linker")
     for name in ["boot", "benchmark"]:
@@ -239,6 +273,10 @@ def main():
         if name == "benchmark":
             launch.add_argument("--samples", type=int, choices=range(1, 101), metavar="1..100", default=30)
     args = parser.parse_args()
+    if args.command == "check-kernel":
+        report = check_kernel(args.kernel.resolve(strict=True))
+        print(json.dumps(report, indent=2))
+        return 2 if report["compatibility"] == "incompatible" else 0
     if args.command == "doctor":
         return doctor()
     if args.command == "build":

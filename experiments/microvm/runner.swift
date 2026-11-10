@@ -116,7 +116,8 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         report["framework_supported"] = VZVirtualMachine.isSupported
         let loader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: req.kernel))
         loader.initialRamdiskURL = URL(fileURLWithPath: req.initrd)
-        loader.commandLine = "console=hvc0 rdinit=/init quiet panic=-1"
+        // Stay halted on panic; negative panic timeouts reboot immediately.
+        loader.commandLine = "console=hvc0 rdinit=/init quiet panic=0"
         let config = VZVirtualMachineConfiguration()
         config.bootLoader = loader
         config.cpuCount = 1
@@ -161,6 +162,12 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         bytes.append(data)
         guard let req = request else { return }
         let text = String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n")
+        if text.contains("Kernel panic - not syncing:") {
+            // Untrusted diagnostic hint; only the framework can confirm stopping.
+            report["guest_panic_observed"] = true
+            stop("guest_panic")
+            return
+        }
         if report["guest_ready"] as? Bool != true && text.contains("COCOON_READY:" + req.token + "\n") {
             report["guest_ready"] = true
             report["guest_ready_ms"] = elapsed()

@@ -21,6 +21,7 @@ python3 experiments/microvm/probe.py build
 python3 experiments/microvm/probe.py doctor
 python3 experiments/microvm/runner_checks.py experiments/microvm/build/cocoon-vz
 python3 -m unittest discover -s experiments/microvm -p 'test_*.py' -v
+python3 experiments/microvm/probe.py check-kernel --kernel /absolute/path/to/Image
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case roundtrip
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case deadline --seconds 2
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case cancel --seconds 10
@@ -34,6 +35,17 @@ virtio-console。实验计算内核摘要并只读使用，不重新分发内核
 构建产物写入已忽略的 `build/`。私有请求、输入镜像、日志和证据写入已忽略的
 `runs/`，每次执行创建新的私有目录。原生启动器经过优化和临时签名，尚不是经过
 公证的发行版本。
+
+`check-kernel` 在存在内嵌 IKCONFIG 时检查配置，要求
+`CONFIG_BLK_DEV_INITRD`、`CONFIG_RD_GZIP`、`CONFIG_BINFMT_ELF`、`CONFIG_VIRTIO`
+和 `CONFIG_VIRTIO_CONSOLE` 均内建（`=y`）。候选配置不代表启动成功。
+缺少内嵌配置时报告“未知”，使用者可根据已知配置继续实验；已知不兼容或格式损坏
+的内嵌配置会在创建 VM 尝试之前被拒绝。配置解压上限为 2 MiB。
+这属于 Python 工具的检查；原生启动器仍是实验内部接口，不是准入 API。
+
+内核命令行采用 `panic=0`，防止 panic 后自动重启。串口出现 panic 文本时，
+宿主以 `guest_panic` 为由请求停止；该文本仅是不可信诊断线索，不能证明 panic
+确实发生，也不能证明 VM 已终止。
 
 ## 验收
 
@@ -75,16 +87,19 @@ guest 内核、硬件环境和缓存条件；当前不宣称性能相当。
 
 ## 当前观察
 
-ARM64 guest init 和优化原生启动器均已构建成功。两种真实启动测试在受管理执行
-环境中均停在配置校验，返回 `VZErrorDomain` 错误码 2。Linux 启动、输入输出和
-期限停止仍未通过验收。此前 Hypervisor 空上下文测试成功，因此仍需诊断实际宿主
-环境中的框架拒绝原因。
+ARM64 guest init 和优化原生启动器均已构建成功。受管理执行环境拒绝框架配置，
+且读取两项宿主能力 sysctl 均返回 EPERM。使用者在普通终端运行 `doctor` 时，
+框架报告支持，两项能力值均为 1。
 
-`doctor` 不需要内核，也不创建 VM。它记录框架可用性，以及能否读取
-`kern.hv_support` 和 `hw.optional.arm64`；读取失败时附带 errno。
-当前受管理环境中的两次读取均返回 EPERM。这支持进一步调查能力检测受限，
-但不能证明它是框架拒绝的唯一原因，也不能证明硬件有故障。
-诊断报告属于 `runs/` 中的私有文件，不是启动基准数据。
+使用者运行的 roundtrip 实验约在 168 ms 收到框架运行回调，并最终由宿主确认停止。
+guest 未发出就绪标记：所用 LinuxKit 内核关闭了 `CONFIG_BLK_DEV_INITRD`，
+尝试挂载根文件系统时发生 panic。此前的 `panic=-1` 导致立即重启，反复输出 panic
+直至触及串口上限。现在工具会拒绝这份已知不兼容的配置，并禁用 panic 自动重启。
+私有原始报告与使用者提供的内核二进制不随项目发布。
+
+这证明了该失败尝试中观察到的 VM 启动与停止，不代表输入输出、期限停止或取消验收
+通过。168 ms 的框架回调不是 guest 就绪时间，也不是成功启动基准；仍需兼容内核和
+真实验收。无须内核的 `doctor` 不创建 VM，其私有报告仅用于能力诊断。
 
 原生启动器协议检查会在创建 VM 前拒绝未知字段、无效限制、畸形 JSON 和超过
 16 KiB 的请求。macOS CI 构建、签名启动器并运行这些检查，不启动或认证 guest。

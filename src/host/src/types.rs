@@ -26,6 +26,13 @@ identity!(VmId);
 identity!(ImageId);
 identity!(BootId);
 identity!(OperationId);
+identity!(AttemptId);
+identity!(LeaseId);
+identity!(CheckpointId);
+identity!(DiskGenerationId);
+identity!(RequestId);
+identity!(JournalId);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VmState {
@@ -33,8 +40,63 @@ pub enum VmState {
     Starting,
     Running,
     Stopping,
+    Suspending,
+    Suspended,
+    Resuming,
+    RecoveryRequired,
     Stopped,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionAttempt {
+    pub vm: VmId,
+    pub id: AttemptId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionAuthority {
+    pub attempt: ExecutionAttempt,
+    pub generation: u64,
+    pub lease: LeaseId,
+}
+
+impl ExecutionAuthority {
+    pub fn issue(vm: &mut Vm) -> Result<Self, &'static str> {
+        if !matches!(
+            vm.state,
+            VmState::Prepared | VmState::Stopped | VmState::Suspended
+        ) {
+            return Err("VM is not available for a new execution attempt");
+        }
+        vm.generation = vm
+            .generation
+            .checked_add(1)
+            .ok_or("VM generation exhausted")?;
+        let authority = Self {
+            attempt: ExecutionAttempt {
+                vm: vm.id,
+                id: AttemptId::from(Uuid::new_v4()),
+            },
+            generation: vm.generation,
+            lease: LeaseId::from(Uuid::new_v4()),
+        };
+        vm.active_attempt = Some(authority.attempt.id);
+        vm.active_lease = Some(authority.lease);
+        vm.state = VmState::Starting;
+        Ok(authority)
+    }
+
+    pub fn authorize(&self, vm: &Vm) -> Result<(), &'static str> {
+        if self.attempt.vm != vm.id
+            || vm.active_attempt != Some(self.attempt.id)
+            || vm.active_lease != Some(self.lease)
+            || vm.generation != self.generation
+        {
+            return Err("stale or mismatched execution authority");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,6 +118,12 @@ pub struct Vm {
     pub network: bool,
     pub vcpus: u8,
     pub memory_mib: u32,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
+    pub active_attempt: Option<AttemptId>,
+    #[serde(default)]
+    pub active_lease: Option<LeaseId>,
     #[serde(default)]
     pub disk_copy: Option<DiskCopy>,
 }

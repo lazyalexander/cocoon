@@ -16,11 +16,13 @@ use uuid::Uuid;
 
 mod disk;
 mod error;
+mod journal;
 pub mod persistence;
 mod project;
 mod types;
 use disk::{copy_new, hash, sync_directory};
 pub use error::{Error, Result};
+pub use journal::JournalEntry;
 pub use types::*;
 /// Only trusted host code may construct this interface. Socket ACLs are not
 /// isolation from arbitrary code running under the same macOS user.
@@ -55,7 +57,7 @@ impl Manager {
         }
         let db = Connection::open(root.join("state.sqlite3"))?;
         let version: u32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 1 {
+        if version > 2 {
             return Err("unsupported database schema version".into());
         }
         db.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -64,7 +66,8 @@ impl Manager {
             CREATE TABLE IF NOT EXISTS vms(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS boots(id TEXT PRIMARY KEY, vm TEXT NOT NULL, status TEXT NOT NULL, report TEXT);
-            PRAGMA user_version=1; COMMIT;")?;
+            CREATE TABLE IF NOT EXISTS journal(sequence INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, vm TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, previous_sha256 TEXT NOT NULL, sha256 TEXT NOT NULL);
+            PRAGMA user_version=2; COMMIT;")?;
         Ok(Self {
             root: root.to_owned(),
             db,
@@ -189,6 +192,9 @@ impl Manager {
             network: false,
             vcpus: 1,
             memory_mib: 512,
+            generation: 0,
+            active_attempt: None,
+            active_lease: None,
             disk_copy: Some(disk_copy),
         };
         sync_directory(&dir)?;

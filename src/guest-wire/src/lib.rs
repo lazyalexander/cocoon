@@ -19,19 +19,38 @@ pub struct Identity {
     pub request: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub identity: Identity,
     pub operation: Operation,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
-    Write { path: String, content: String },
-    Read { path: String },
-    Exec { argv: Vec<String>, cwd: String },
+    Write {
+        path: String,
+        content: String,
+    },
+    Read {
+        path: String,
+    },
+    WriteBytes {
+        path: String,
+        content_hex: String,
+        offset: u64,
+        sync: bool,
+    },
+    ReadChunk {
+        path: String,
+        offset: u64,
+        max_bytes: u32,
+    },
+    Exec {
+        argv: Vec<String>,
+        cwd: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,12 +67,37 @@ pub enum Output {
     Content {
         content: String,
     },
+    Chunk {
+        content_hex: String,
+        next_offset: u64,
+        eof: bool,
+    },
     Exited {
         code: Option<i32>,
         stdout: String,
         stderr: String,
         timed_out: bool,
     },
+}
+
+pub fn encode_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub fn decode_bytes(value: &str) -> io::Result<Vec<u8>> {
+    if !value.len().is_multiple_of(2) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(io::Error::other("invalid hexadecimal content"));
+    }
+    value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).map_err(io::Error::other)?;
+            u8::from_str_radix(text, 16).map_err(io::Error::other)
+        })
+        .collect()
 }
 
 impl Request {
@@ -75,6 +119,22 @@ impl Request {
                 path
             }
             Operation::Read { path } => path,
+            Operation::WriteBytes {
+                path, content_hex, ..
+            } => {
+                if decode_bytes(content_hex)?.len() > MAX_CONTENT {
+                    return Err(io::Error::other("binary content limit"));
+                }
+                path
+            }
+            Operation::ReadChunk {
+                path, max_bytes, ..
+            } => {
+                if !(1..=MAX_CONTENT as u32).contains(max_bytes) {
+                    return Err(io::Error::other("invalid chunk size"));
+                }
+                path
+            }
             Operation::Exec { argv, cwd } => {
                 if argv.is_empty()
                     || argv.len() > 32
@@ -173,5 +233,15 @@ mod tests {
         let mut value = serde_json::to_value(request).unwrap();
         value["grant"] = true.into();
         assert!(serde_json::from_value::<Request>(value).is_err());
+    }
+
+    #[test]
+    fn binary_chunks_are_exact_and_strict() {
+        let bytes = [0, 255, 1, 128];
+        assert_eq!(encode_bytes(&bytes), "00ff0180");
+        assert_eq!(decode_bytes("00ff0180").unwrap(), bytes);
+        for invalid in ["0", "gg", "00\n"] {
+            assert!(decode_bytes(invalid).is_err());
+        }
     }
 }

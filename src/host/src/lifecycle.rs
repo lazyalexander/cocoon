@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::Read,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -324,6 +325,99 @@ impl Manager {
             return Err("guest response identity mismatch".into());
         }
         Ok(response)
+    }
+
+    pub fn export_artifact(
+        &self,
+        request: cocoon_guest_wire::Request,
+        guest_path: &str,
+        name: &str,
+    ) -> Result<serde_json::Value> {
+        if name.is_empty()
+            || name.len() > 128
+            || Path::new(name).components().count() != 1
+            || !matches!(
+                Path::new(name).components().next(),
+                Some(std::path::Component::Normal(_))
+            )
+        {
+            return Err("artifact name must be one normal path component".into());
+        }
+        let vm_id = VmId::from(
+            Uuid::parse_str(&request.identity.vm)
+                .map_err(|_| crate::Error::from("invalid VM identity"))?,
+        );
+        let attempt = AttemptId::from(
+            Uuid::parse_str(&request.identity.attempt)
+                .map_err(|_| crate::Error::from("invalid attempt identity"))?,
+        );
+        let execution = self.execution(attempt)?;
+        let exports = execution
+            .request
+            .parent()
+            .ok_or("invalid execution directory")?
+            .join("exports");
+        if !exports.exists() {
+            fs::DirBuilder::new().mode(0o700).create(&exports)?;
+        }
+        let destination = exports.join(name);
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&destination)?;
+        let result = (|| -> Result<u64> {
+            let mut offset = 0_u64;
+            loop {
+                let mut chunk = request.clone();
+                chunk.operation = cocoon_guest_wire::Operation::ReadChunk {
+                    path: guest_path.into(),
+                    offset,
+                    max_bytes: 8192,
+                };
+                let response = self.guest(chunk)?;
+                let response_output = response.result.map_err(crate::Error::from)?;
+                let cocoon_guest_wire::Output::Chunk {
+                    content_hex,
+                    next_offset,
+                    eof,
+                } = response_output
+                else {
+                    return Err("guest returned a non-chunk artifact response".into());
+                };
+                let bytes = cocoon_guest_wire::decode_bytes(&content_hex)?;
+                if next_offset != offset + bytes.len() as u64 || (!eof && bytes.is_empty()) {
+                    return Err("invalid artifact chunk progression".into());
+                }
+                if offset + bytes.len() as u64 > 64 * 1024 * 1024 {
+                    return Err("artifact exceeds 64 MiB".into());
+                }
+                std::io::Write::write_all(&mut output, &bytes)?;
+                offset = next_offset;
+                if eof {
+                    output.sync_all()?;
+                    return Ok(offset);
+                }
+            }
+        })();
+        match result {
+            Ok(bytes) => {
+                sync_directory(&exports)?;
+                self.append_journal(
+                    vm_id,
+                    "artifact_complete",
+                    serde_json::json!({"attempt": attempt, "name": name, "bytes": bytes}),
+                )?;
+                Ok(
+                    serde_json::json!({"name": name, "bytes": bytes, "sha256": hash(&destination)?, "automatically_executed": false}),
+                )
+            }
+            Err(error) => {
+                drop(output);
+                let _ = fs::remove_file(destination);
+                Err(error)
+            }
+        }
     }
 
     pub fn runner_sha256(&self, runner: &Path) -> Result<String> {

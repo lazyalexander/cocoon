@@ -1,24 +1,40 @@
 use crate::{Manager, RequestId, Result, VmId};
 use cocoon_guest_wire::{receive, send};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     os::unix::{
         fs::{OpenOptionsExt, PermissionsExt},
         net::UnixListener,
     },
-    path::Path,
+    path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostOperation {
-    Start { vm: VmId },
-    Stop { vm: VmId },
-    Show { vm: VmId },
-    Reconcile { vm: VmId },
-    Guest { request: cocoon_guest_wire::Request },
+    Start {
+        vm: VmId,
+    },
+    Stop {
+        vm: VmId,
+    },
+    Show {
+        vm: VmId,
+    },
+    Reconcile {
+        vm: VmId,
+    },
+    Guest {
+        request: cocoon_guest_wire::Request,
+    },
+    Export {
+        request: cocoon_guest_wire::Request,
+        guest_path: String,
+        name: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -38,6 +54,15 @@ pub struct HostResponse {
 }
 
 impl Manager {
+    pub fn api_socket_path(&self) -> PathBuf {
+        use std::os::unix::ffi::OsStrExt;
+        let digest: String = Sha256::digest(self.root.as_os_str().as_bytes())
+            .into_iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        PathBuf::from(format!("/tmp/cocoon-host-{digest}.sock"))
+    }
+
     fn api_credential(&self) -> Result<String> {
         let path = self.root.join("api-credential");
         if !path.exists() {
@@ -84,6 +109,18 @@ impl Manager {
                     guest.identity.caller = request.caller.clone();
                     Ok(serde_json::to_value(self.guest(guest)?)?)
                 }
+                HostOperation::Export {
+                    request: mut guest,
+                    guest_path,
+                    name,
+                } => {
+                    guest.identity.caller = request.caller.clone();
+                    Ok(serde_json::to_value(self.export_artifact(
+                        guest,
+                        &guest_path,
+                        &name,
+                    )?)?)
+                }
             }
         })()
         .map_err(|error: crate::Error| error.to_string());
@@ -96,7 +133,7 @@ impl Manager {
 
     pub fn call_api(&self, mut request: HostRequest) -> Result<HostResponse> {
         request.credential = self.api_credential()?;
-        let mut stream = std::os::unix::net::UnixStream::connect(self.root.join("host.sock"))?;
+        let mut stream = std::os::unix::net::UnixStream::connect(self.api_socket_path())?;
         send(&request, &mut stream)?;
         Ok(receive(&mut stream)?)
     }
@@ -106,12 +143,9 @@ impl Manager {
             return Err("runner must be absolute".into());
         }
         self.api_credential()?;
-        let path = self.root.join("host.sock");
-        let listener = UnixListener::bind(path)?;
-        fs::set_permissions(
-            self.root.join("host.sock"),
-            fs::Permissions::from_mode(0o600),
-        )?;
+        let path = self.api_socket_path();
+        let listener = UnixListener::bind(&path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         for stream in listener.incoming() {
             let mut stream = stream?;
             let request = receive::<HostRequest>(&mut stream);

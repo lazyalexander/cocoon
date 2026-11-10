@@ -1,7 +1,7 @@
 use cocoon_guest_wire::{MAX_CONTENT, Operation, Output};
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::unix::{fs::OpenOptionsExt, process::CommandExt},
     process::{Command, Stdio},
     thread,
@@ -35,6 +35,46 @@ pub fn execute(operation: &Operation) -> io::Result<Output> {
         Operation::Read { path } => Ok(Output::Content {
             content: bounded(fs::File::open(path)?)?,
         }),
+        Operation::WriteBytes {
+            path,
+            content_hex,
+            offset,
+            sync,
+        } => {
+            let bytes = cocoon_guest_wire::decode_bytes(content_hex)?;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).mode(0o600);
+            if *offset == 0 {
+                options.create(true).truncate(true);
+            }
+            let mut file = options.open(path)?;
+            file.seek(SeekFrom::Start(*offset))?;
+            file.write_all(&bytes)?;
+            if *sync {
+                file.sync_all()?;
+            }
+            Ok(Output::Written)
+        }
+        Operation::ReadChunk {
+            path,
+            offset,
+            max_bytes,
+        } => {
+            let mut file = fs::File::open(path)?;
+            file.seek(SeekFrom::Start(*offset))?;
+            let mut bytes = Vec::new();
+            file.take((*max_bytes as u64) + 1).read_to_end(&mut bytes)?;
+            let eof = bytes.len() <= *max_bytes as usize;
+            bytes.truncate(*max_bytes as usize);
+            let next_offset = offset
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| io::Error::other("file offset overflow"))?;
+            Ok(Output::Chunk {
+                content_hex: cocoon_guest_wire::encode_bytes(&bytes),
+                next_offset,
+                eof,
+            })
+        }
         Operation::Exec { argv, cwd } => {
             let mut child = Command::new(&argv[0])
                 .args(&argv[1..])

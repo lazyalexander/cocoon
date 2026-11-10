@@ -147,6 +147,7 @@ fn private_unix_socket_roundtrip_enforces_authentication() {
     manager
         .create(vm, image, "owner", FinishPolicy::Retain)
         .unwrap();
+    let socket = manager.api_socket_path();
     drop(manager);
     let root = sandbox.0.clone();
     thread::spawn(move || {
@@ -155,7 +156,6 @@ fn private_unix_socket_roundtrip_enforces_authentication() {
             .serve_api(Path::new("/unused"))
             .unwrap();
     });
-    let socket = sandbox.0.join("host.sock");
     for _ in 0..100 {
         if socket.exists() {
             break;

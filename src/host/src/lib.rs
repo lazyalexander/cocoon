@@ -80,6 +80,7 @@ impl Manager {
             CREATE TABLE IF NOT EXISTS journal(sequence INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, vm TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, previous_sha256 TEXT NOT NULL, sha256 TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS executions(attempt TEXT PRIMARY KEY, vm TEXT NOT NULL, record TEXT NOT NULL);
             PRAGMA user_version=2; COMMIT;")?;
+        db.execute("UPDATE images SET manifest=json_set(manifest,'$.approved',json('true')) WHERE json_extract(manifest,'$.approved') IS NULL", [])?;
         Ok(Self {
             root: root.to_owned(),
             db,
@@ -207,6 +208,9 @@ impl Manager {
             }
             return Err("VM identity already exists with different parameters".into());
         }
+        if self.image(image)?["approved"] != true {
+            return Err("VM creation requires an approved image".into());
+        }
         self.verify_image(image)?;
         // A pending create is never automatically replayed after an unknown result.
         self.begin(OperationId::from(id.raw()), "create_vm", id)?;
@@ -230,6 +234,7 @@ impl Manager {
             vcpus: 1,
             memory_mib: 512,
             priority: 100,
+            revision: 0,
             generation: 0,
             active_attempt: None,
             active_lease: None,

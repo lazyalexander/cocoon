@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     os::unix::{
-        fs::{OpenOptionsExt, PermissionsExt},
+        fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
         net::UnixListener,
     },
     path::{Path, PathBuf},
@@ -19,6 +19,9 @@ pub enum HostOperation {
         vm: VmId,
     },
     Stop {
+        vm: VmId,
+    },
+    EmergencyStop {
         vm: VmId,
     },
     Show {
@@ -136,6 +139,10 @@ impl Manager {
                     self.stop(vm)?;
                     Ok(serde_json::Value::Null)
                 }
+                HostOperation::EmergencyStop { vm } => {
+                    self.emergency_stop(vm)?;
+                    Ok(serde_json::Value::Null)
+                }
                 HostOperation::Show { vm } => Ok(serde_json::to_value(self.get(vm)?)?),
                 HostOperation::Reconcile { vm } => Ok(serde_json::to_value(self.reconcile(vm)?)?),
                 HostOperation::Suspend { vm } => {
@@ -213,6 +220,15 @@ impl Manager {
         }
         self.api_credential()?;
         let path = self.api_socket_path();
+        if path.exists() {
+            if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+                return Err("host API server is already running".into());
+            }
+            if !fs::symlink_metadata(&path)?.file_type().is_socket() {
+                return Err("host API socket path is not a socket".into());
+            }
+            fs::remove_file(&path)?;
+        }
         let listener = UnixListener::bind(&path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
@@ -230,23 +246,29 @@ impl Manager {
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     continue;
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error.into()),
             };
             stream.set_nonblocking(false)?;
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+            stream.set_write_timeout(Some(std::time::Duration::from_secs(60)))?;
             let request = receive::<HostRequest>(&mut stream);
-            match request {
-                Ok(request) => {
-                    let response = self.handle_api(request, runner);
-                    send(&response, &mut stream)?;
+            let response = match request {
+                Ok(request) => self.handle_api(request, runner),
+                Err(error) => HostResponse {
+                    request: RequestId::from(Uuid::nil()),
+                    caller: "unknown".into(),
+                    result: Err(error.to_string()),
+                },
+            };
+            if let Err(error) = send(&response, &mut stream) {
+                eprintln!("cocoon API client disconnected: {error}");
+            }
+            if last_protection.elapsed() >= std::time::Duration::from_secs(1) {
+                if let Err(error) = self.protect() {
+                    eprintln!("cocoon protection: {error}");
                 }
-                Err(error) => {
-                    let response = HostResponse {
-                        request: RequestId::from(Uuid::nil()),
-                        caller: "unknown".into(),
-                        result: Err(error.to_string()),
-                    };
-                    send(&response, &mut stream)?;
-                }
+                last_protection = std::time::Instant::now();
             }
         }
         Ok(())

@@ -117,11 +117,30 @@ impl Manager {
         Ok(())
     }
 
-    pub(crate) fn save_vm(&self, vm: &crate::Vm) -> Result<()> {
-        self.db.execute(
-            "UPDATE vms SET record=?1 WHERE id=?2",
-            params![serde_json::to_string(vm)?, vm.id.to_string()],
+    pub(crate) fn save_vm(&self, vm: &mut crate::Vm) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        let current_record: String = tx.query_row(
+            "SELECT record FROM vms WHERE id=?1",
+            [vm.id.to_string()],
+            |row| row.get(0),
         )?;
+        let current: crate::Vm = serde_json::from_str(&current_record)?;
+        if current.revision != vm.revision {
+            return Err("stale VM state update".into());
+        }
+        vm.revision = vm.revision.checked_add(1).ok_or("VM revision exhausted")?;
+        let changed = tx.execute(
+            "UPDATE vms SET record=?1 WHERE id=?2 AND record=?3",
+            params![
+                serde_json::to_string(&*vm)?,
+                vm.id.to_string(),
+                current_record
+            ],
+        )?;
+        if changed != 1 {
+            return Err("VM state changed concurrently".into());
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -145,10 +164,14 @@ impl Manager {
             return Err("runner must be a native ARM64 Mach-O executable".into());
         }
         let _lease = working_disk_lease(self, id)?;
+        self.recover_rollback(id)?;
         if !self.admission_allowed()? {
             return Err("host protection backpressure rejects new execution".into());
         }
         let mut vm = self.get(id)?;
+        if self.image(vm.image)?["approved"] != true {
+            return Err("execution requires an approved image".into());
+        }
         self.verify_image(vm.image)?;
         let authority = if allow_recovery {
             ExecutionAuthority::issue_recovery(&mut vm)?
@@ -157,7 +180,7 @@ impl Manager {
         };
         vm.state = VmState::Unknown;
         self.append_journal(id, if allow_recovery { "cold_recovery_intent" } else { "start_intent" }, serde_json::json!({"attempt": authority.attempt.id, "generation": authority.generation}))?;
-        self.save_vm(&vm)?;
+        self.save_vm(&mut vm)?;
         let run = self
             .root
             .join("vms")
@@ -253,7 +276,7 @@ impl Manager {
                     } else {
                         "unknown".into()
                     };
-                    self.save_vm(&vm)?;
+                    self.save_vm(&mut vm)?;
                     self.save_execution(&execution)?;
                 }
                 return Err(format!("runner exited before guest readiness: {status}").into());
@@ -276,20 +299,9 @@ impl Manager {
             vm.suspend_state = None;
         }
         execution.status = "running".into();
-        let tx = self.db.unchecked_transaction()?;
-        tx.execute(
-            "UPDATE vms SET record=?1 WHERE id=?2",
-            params![serde_json::to_string(&vm)?, id.to_string()],
-        )?;
-        tx.execute(
-            "UPDATE executions SET record=?1 WHERE attempt=?2",
-            params![
-                serde_json::to_string(&execution)?,
-                execution.attempt.to_string()
-            ],
-        )?;
-        tx.commit()?;
-        if restore.is_some() {
+        self.save_vm(&mut vm)?;
+        self.save_execution(&execution)?;
+        {
             let challenge = cocoon_guest_wire::Request {
                 identity: cocoon_guest_wire::Identity {
                     vm: id.to_string(),
@@ -317,7 +329,7 @@ impl Manager {
             if !valid {
                 vm.state = VmState::Unknown;
                 execution.status = "unknown".into();
-                self.save_vm(&vm)?;
+                self.save_vm(&mut vm)?;
                 self.save_execution(&execution)?;
                 return Err("restored guest failed the host challenge".into());
             }
@@ -335,6 +347,7 @@ impl Manager {
     }
 
     pub fn suspend(&self, id: VmId) -> Result<()> {
+        let _lease = working_disk_lease(self, id)?;
         let mut vm = self.get(id)?;
         if vm.state != VmState::Running {
             return Err("VM is not running".into());
@@ -349,7 +362,7 @@ impl Manager {
             .join("state.vz");
         vm.state = VmState::Suspending;
         execution.status = "suspending".into();
-        self.save_vm(&vm)?;
+        self.save_vm(&mut vm)?;
         self.save_execution(&execution)?;
         self.append_journal(
             id,
@@ -359,7 +372,7 @@ impl Manager {
         if !process_alive(pid, &execution.request)? {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
-            self.save_vm(&vm)?;
+            self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
             return Err("runner identity mismatch; no snapshot signal sent".into());
         }
@@ -373,7 +386,7 @@ impl Manager {
         if !status.success() {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
-            self.save_vm(&vm)?;
+            self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
             return Err("snapshot signal delivery failed".into());
         }
@@ -388,7 +401,7 @@ impl Manager {
                 vm.active_lease = None;
                 vm.suspend_state = Some(state);
                 execution.status = "suspended".into();
-                self.save_vm(&vm)?;
+                self.save_vm(&mut vm)?;
                 self.save_execution(&execution)?;
                 self.append_journal(
                     id,
@@ -401,7 +414,7 @@ impl Manager {
                 vm.state = VmState::RecoveryRequired;
                 vm.active_lease = None;
                 execution.status = "recovery_required".into();
-                self.save_vm(&vm)?;
+                self.save_vm(&mut vm)?;
                 self.save_execution(&execution)?;
                 self.append_journal(
                     id,
@@ -415,7 +428,7 @@ impl Manager {
             if Instant::now() >= deadline {
                 vm.state = VmState::Unknown;
                 execution.status = "unknown".into();
-                self.save_vm(&vm)?;
+                self.save_vm(&mut vm)?;
                 self.save_execution(&execution)?;
                 return Err("snapshot outcome is unknown".into());
             }
@@ -444,22 +457,45 @@ impl Manager {
     }
 
     pub fn stop(&self, id: VmId) -> Result<()> {
+        self.stop_execution(id, false)
+    }
+
+    pub fn emergency_stop(&self, id: VmId) -> Result<()> {
+        self.stop_execution(id, true)
+    }
+
+    fn stop_execution(&self, id: VmId, emergency: bool) -> Result<()> {
+        let _lease = working_disk_lease(self, id)?;
         let mut vm = self.get(id)?;
-        if vm.state != VmState::Running {
+        let previous = vm.state;
+        if !emergency && vm.state != VmState::Running {
             return Err("VM is not running".into());
+        }
+        if emergency
+            && !matches!(
+                previous,
+                VmState::Starting
+                    | VmState::Running
+                    | VmState::Stopping
+                    | VmState::Suspending
+                    | VmState::Resuming
+                    | VmState::Unknown
+            )
+        {
+            return Err("no execution is eligible for emergency stop".into());
         }
         let attempt = vm.active_attempt.ok_or("missing active attempt")?;
         let mut execution = self.execution(attempt)?;
         let pid = execution.pid.ok_or("missing runner pid")?;
         vm.state = VmState::Stopping;
         execution.status = "stopping".into();
-        self.save_vm(&vm)?;
+        self.save_vm(&mut vm)?;
         self.save_execution(&execution)?;
         self.append_journal(id, "stop_intent", serde_json::json!({"attempt": attempt}))?;
         if !process_alive(pid, &execution.request)? {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
-            self.save_vm(&vm)?;
+            self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
             return Err("runner identity mismatch; no signal sent".into());
         }
@@ -473,7 +509,7 @@ impl Manager {
         if !status.success() {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
-            self.save_vm(&vm)?;
+            self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
             return Err("runner stop delivery failed; termination unknown".into());
         }
@@ -483,10 +519,18 @@ impl Manager {
             if event(&execution.events, "stopped", &token)?
                 && runner_exited(self, attempt, pid, &execution.request)?
             {
-                vm.state = VmState::Stopped;
+                vm.state = if matches!(previous, VmState::Running | VmState::Stopping) {
+                    VmState::Stopped
+                } else {
+                    VmState::RecoveryRequired
+                };
                 vm.active_lease = None;
-                execution.status = "stopped".into();
-                self.save_vm(&vm)?;
+                execution.status = if vm.state == VmState::Stopped {
+                    "stopped".into()
+                } else {
+                    "recovery_required".into()
+                };
+                self.save_vm(&mut vm)?;
                 self.save_execution(&execution)?;
                 self.append_journal(id, "stop_complete", serde_json::json!({"attempt": attempt}))?;
                 return Ok(());
@@ -494,7 +538,7 @@ impl Manager {
             if Instant::now() >= deadline {
                 vm.state = VmState::Unknown;
                 execution.status = "unknown".into();
-                self.save_vm(&vm)?;
+                self.save_vm(&mut vm)?;
                 self.save_execution(&execution)?;
                 return Err("runner stop outcome is unknown".into());
             }
@@ -503,33 +547,56 @@ impl Manager {
     }
 
     pub fn reconcile(&self, id: VmId) -> Result<VmState> {
+        let _lease = working_disk_lease(self, id)?;
+        self.recover_rollback(id)?;
         let mut vm = self.get(id)?;
-        if !matches!(
+        if matches!(
             vm.state,
-            VmState::Starting
-                | VmState::Running
-                | VmState::Stopping
-                | VmState::Suspending
-                | VmState::Resuming
+            VmState::Prepared | VmState::Stopped | VmState::Suspended | VmState::RecoveryRequired
         ) {
             return Ok(vm.state);
         }
-        let attempt = vm.active_attempt.ok_or("active VM has no attempt")?;
+        let Some(attempt) = vm.active_attempt else {
+            return Ok(vm.state);
+        };
+        let previous = vm.state;
         let mut execution = self.execution(attempt)?;
         let token = attempt.raw().simple().to_string();
-        let pid = execution.pid.ok_or("runner spawn outcome unknown")?;
-        if event(&execution.events, "stopped", &token)?
-            && runner_exited(self, attempt, pid, &execution.request)?
-        {
-            vm.state = VmState::Stopped;
+        let Some(pid) = execution.pid else {
+            return Ok(vm.state);
+        };
+        let exited = runner_exited(self, attempt, pid, &execution.request)?;
+        let stopped = event(&execution.events, "stopped", &token)? && exited;
+        if stopped {
             vm.active_lease = None;
-            execution.status = "stopped".into();
-            self.save_vm(&vm)?;
+            match previous {
+                VmState::Suspending => {
+                    let saved = event(&execution.events, "snapshot_saved", &token)?;
+                    if saved {
+                        vm.state = VmState::Suspended;
+                        vm.suspend_state =
+                            execution.request.parent().map(|dir| dir.join("state.vz"));
+                        execution.status = "suspended".into();
+                    } else {
+                        vm.state = VmState::RecoveryRequired;
+                        execution.status = "recovery_required".into();
+                    }
+                }
+                VmState::Stopping | VmState::Running => {
+                    vm.state = VmState::Stopped;
+                    execution.status = "stopped".into();
+                }
+                _ => {
+                    vm.state = VmState::RecoveryRequired;
+                    execution.status = "recovery_required".into();
+                }
+            }
+            self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
-        } else if runner_exited(self, attempt, pid, &execution.request)? {
+        } else if exited && previous != VmState::Unknown {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
-            self.save_vm(&vm)?;
+            self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
         }
         Ok(vm.state)
@@ -603,11 +670,12 @@ impl Manager {
             fs::DirBuilder::new().mode(0o700).create(&exports)?;
         }
         let destination = exports.join(name);
+        let partial = exports.join(format!(".{name}.{}.partial", Uuid::new_v4()));
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&destination)?;
+            .open(&partial)?;
         let result = (|| -> Result<u64> {
             let mut offset = 0_u64;
             loop {
@@ -644,6 +712,9 @@ impl Manager {
         })();
         match result {
             Ok(bytes) => {
+                drop(output);
+                fs::hard_link(&partial, &destination)?;
+                fs::remove_file(&partial)?;
                 sync_directory(&exports)?;
                 self.append_journal(
                     vm_id,
@@ -656,7 +727,11 @@ impl Manager {
             }
             Err(error) => {
                 drop(output);
-                let _ = fs::remove_file(destination);
+                if let Err(cleanup) = fs::remove_file(partial) {
+                    return Err(
+                        format!("{error}; partial artifact cleanup failed: {cleanup}").into(),
+                    );
+                }
                 Err(error)
             }
         }
@@ -679,5 +754,29 @@ mod tests {
         );
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn stale_manager_records_are_rejected() {
+        let root = PathBuf::from(format!("/tmp/cocoon-cas-{}", Uuid::new_v4()));
+        let first = Manager::open(&root).unwrap();
+        let second = Manager::open(&root).unwrap();
+        let input = root.join("input");
+        fs::write(&input, b"fixture").unwrap();
+        let image = first
+            .import_image(&input, &input, &input, "test MIT")
+            .unwrap();
+        let id = VmId::from(Uuid::new_v4());
+        first
+            .create(id, image, "owner", crate::FinishPolicy::Retain)
+            .unwrap();
+        let mut stale = first.get(id).unwrap();
+        let mut current = second.get(id).unwrap();
+        current.priority = 50;
+        second.save_vm(&mut current).unwrap();
+        stale.priority = 75;
+        assert!(first.save_vm(&mut stale).is_err());
+        assert_eq!(first.get(id).unwrap().priority, 50);
+        fs::remove_dir_all(root).unwrap();
     }
 }

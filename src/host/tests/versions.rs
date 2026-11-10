@@ -27,6 +27,16 @@ fn candidates_require_approval_and_branches_are_independent() {
     assert_eq!(manager.image(candidate).unwrap()["approved"], false);
     let branch = VmId::from(Uuid::new_v4());
     assert!(manager.branch(candidate, branch, "owner").is_err());
+    assert!(
+        manager
+            .create(
+                VmId::from(Uuid::new_v4()),
+                candidate,
+                "owner",
+                FinishPolicy::Retain
+            )
+            .is_err()
+    );
     manager.promote_candidate(candidate).unwrap();
     let branched = manager.branch(candidate, branch, "owner").unwrap();
     assert_eq!(branched.state, VmState::Prepared);
@@ -45,6 +55,37 @@ fn candidates_require_approval_and_branches_are_independent() {
     manager.rollback(vm, base).unwrap();
     assert_eq!(fs::read(work).unwrap(), b"baseline");
     assert!(manager.verify_journal().unwrap());
+    drop(manager);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn interrupted_rollback_restores_previous_disk_and_requires_recovery() {
+    let root = PathBuf::from(format!("/tmp/cocoon-r-{}", Uuid::new_v4()));
+    let manager = Manager::open(&root).unwrap();
+    let input = root.join("input");
+    fs::write(&input, b"baseline").unwrap();
+    let base = manager
+        .import_image(&input, &input, &input, "test MIT")
+        .unwrap();
+    let vm = VmId::from(Uuid::new_v4());
+    manager
+        .create(vm, base, "owner", FinishPolicy::Retain)
+        .unwrap();
+    let dir = root.join("vms").join(vm.to_string());
+    fs::write(dir.join("root.raw"), b"important-work").unwrap();
+    let db = rusqlite::Connection::open(root.join("state.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO operations VALUES ('rollback-test','rollback',?1,'pending')",
+        [vm.to_string()],
+    )
+    .unwrap();
+    fs::rename(dir.join("root.raw"), dir.join("root.rollback-old")).unwrap();
+    fs::copy(input, dir.join("root.raw")).unwrap();
+    assert!(manager.rollback(vm, base).is_err());
+    assert_eq!(fs::read(dir.join("root.raw")).unwrap(), b"important-work");
+    assert_eq!(manager.get(vm).unwrap().state, VmState::RecoveryRequired);
+    assert!(manager.get(vm).unwrap().suspend_state.is_none());
     drop(manager);
     fs::remove_dir_all(root).unwrap();
 }

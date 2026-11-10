@@ -134,6 +134,8 @@ pub struct Vm {
     #[serde(default = "default_priority")]
     pub priority: i32,
     #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
     pub generation: u64,
     #[serde(default)]
     pub active_attempt: Option<AttemptId>,

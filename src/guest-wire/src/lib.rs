@@ -51,6 +51,7 @@ pub enum Operation {
         argv: Vec<String>,
         cwd: String,
     },
+    Status,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -77,6 +78,9 @@ pub enum Output {
         stdout: String,
         stderr: String,
         timed_out: bool,
+    },
+    Status {
+        nonce: String,
     },
 }
 
@@ -112,6 +116,7 @@ impl Request {
             }
         }
         let path = match &self.operation {
+            Operation::Status => return Ok(()),
             Operation::Write { path, content } => {
                 if content.len() > MAX_CONTENT {
                     return Err(io::Error::other("content limit"));

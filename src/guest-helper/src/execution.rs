@@ -4,6 +4,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     os::unix::{fs::OpenOptionsExt, process::CommandExt},
     process::{Command, Stdio},
+    sync::OnceLock,
     thread,
     time::{Duration, Instant},
 };
@@ -19,8 +20,30 @@ fn bounded(reader: impl Read) -> io::Result<String> {
     String::from_utf8(bytes).map_err(io::Error::other)
 }
 
+static NONCE: OnceLock<String> = OnceLock::new();
+
+pub fn initialize_nonce() -> io::Result<()> {
+    let mut bytes = [0_u8; 16];
+    // SAFETY: Linux getrandom receives a valid writable buffer and no flags.
+    let result = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
+    if result != bytes.len() as isize {
+        return Err(io::Error::last_os_error());
+    }
+    NONCE
+        .set(cocoon_guest_wire::encode_bytes(&bytes))
+        .map_err(|_| io::Error::other("guest nonce already initialized"))
+}
+
+fn nonce() -> io::Result<String> {
+    NONCE
+        .get()
+        .cloned()
+        .ok_or_else(|| io::Error::other("guest nonce is unavailable"))
+}
+
 pub fn execute(operation: &Operation) -> io::Result<Output> {
     match operation {
+        Operation::Status => Ok(Output::Status { nonce: nonce()? }),
         Operation::Write { path, content } => {
             let mut file = fs::OpenOptions::new()
                 .create(true)

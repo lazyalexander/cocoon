@@ -2,12 +2,54 @@ use crate::{
     FinishPolicy, ImageId, Manager, OperationId, Result, VmId, VmState,
     disk::{copy_new, sync_directory},
 };
+use rusqlite::OptionalExtension;
 use std::fs;
 use uuid::Uuid;
 
 impl Manager {
+    pub(crate) fn recover_rollback(&self, id: VmId) -> Result<()> {
+        let dir = self.root.join("vms").join(id.to_string());
+        let current = dir.join("root.raw");
+        let next = dir.join("root.rollback-new");
+        let previous = dir.join("root.rollback-old");
+        if previous.exists() {
+            let status: Option<String> = self.db.query_row(
+                "SELECT status FROM operations WHERE kind='rollback' AND target=?1 ORDER BY rowid DESC LIMIT 1",
+                [id.to_string()], |row| row.get(0)).optional()?;
+            if status.as_deref() == Some("complete") {
+                fs::remove_file(previous)?;
+                sync_directory(&dir)?;
+                return Ok(());
+            }
+            if current.exists() {
+                let failed = dir.join("root.rollback-failed");
+                fs::rename(&current, failed)?;
+            }
+            fs::rename(previous, &current)?;
+            sync_directory(&dir)?;
+            let mut vm = self.get(id)?;
+            vm.state = VmState::RecoveryRequired;
+            vm.active_lease = None;
+            vm.suspend_state = None;
+            self.save_vm(&mut vm)?;
+            return Err(
+                "interrupted rollback restored the previous disk; recovery approval is required"
+                    .into(),
+            );
+        }
+        if !current.exists() {
+            return Err("working disk is missing".into());
+        }
+        if next.exists() {
+            fs::remove_file(next)?;
+            sync_directory(&dir)?;
+        }
+        Ok(())
+    }
+
     pub fn save_candidate(&self, id: VmId) -> Result<ImageId> {
         let _lease = crate::lifecycle::working_disk_lease(self, id)?;
+        self.recover_rollback(id)?;
         let vm = self.get(id)?;
         if !matches!(vm.state, VmState::Stopped | VmState::Suspended) || vm.active_lease.is_some() {
             return Err("candidate requires an inactive VM".into());
@@ -64,6 +106,7 @@ impl Manager {
 
     pub fn rollback(&self, id: VmId, baseline: ImageId) -> Result<()> {
         let _lease = crate::lifecycle::working_disk_lease(self, id)?;
+        self.recover_rollback(id)?;
         let mut vm = self.get(id)?;
         if !matches!(vm.state, VmState::Stopped | VmState::Suspended) || vm.active_lease.is_some() {
             return Err("rollback requires an inactive VM".into());
@@ -83,7 +126,7 @@ impl Manager {
         let current = dir.join("root.raw");
         let next = dir.join("root.rollback-new");
         let previous = dir.join("root.rollback-old");
-        copy_new(
+        let disk_copy = copy_new(
             &self
                 .root
                 .join("images")
@@ -94,12 +137,13 @@ impl Manager {
         fs::rename(&current, &previous)?;
         fs::rename(&next, &current)?;
         sync_directory(&dir)?;
+        vm.disk_copy = Some(disk_copy);
         vm.image = baseline;
         vm.state = VmState::Stopped;
         vm.active_attempt = None;
         vm.active_lease = None;
         vm.suspend_state = None;
-        self.save_vm(&vm)?;
+        self.save_vm(&mut vm)?;
         self.db.execute(
             "UPDATE operations SET status='complete' WHERE id=?1",
             [operation.to_string()],

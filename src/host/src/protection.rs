@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::Write,
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     process::{Command, Stdio},
 };
 
@@ -43,14 +43,20 @@ impl Manager {
             return Err("invalid protection policy".into());
         }
         let path = self.root.join("protection.json");
+        let temporary = self
+            .root
+            .join(format!(".protection-{}.tmp", uuid::Uuid::new_v4()));
         let mut file = fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(path)?;
+            .open(&temporary)?;
         file.write_all(serde_json::to_vec(&policy)?.as_slice())?;
         file.sync_all()?;
+        drop(file);
+        fs::rename(temporary, &path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        crate::disk::sync_directory(&self.root)?;
         Ok(())
     }
 
@@ -60,7 +66,7 @@ impl Manager {
         }
         let mut vm = self.get(id)?;
         vm.priority = priority;
-        self.save_vm(&vm)
+        self.save_vm(&mut vm)
     }
 
     pub fn admission_allowed(&self) -> Result<bool> {
@@ -97,8 +103,14 @@ impl Manager {
                     errors.push(format!("{}: {error}", vm.id));
                     vm = self.get(vm.id)?;
                     if policy.emergency_stop
-                        && vm.state == VmState::Running
-                        && let Err(stop_error) = self.stop(vm.id)
+                        && !matches!(
+                            vm.state,
+                            VmState::Prepared
+                                | VmState::Stopped
+                                | VmState::Suspended
+                                | VmState::RecoveryRequired
+                        )
+                        && let Err(stop_error) = self.emergency_stop(vm.id)
                     {
                         errors.push(format!("{}: emergency stop: {stop_error}", vm.id));
                     }

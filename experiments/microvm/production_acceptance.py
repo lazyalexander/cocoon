@@ -39,14 +39,20 @@ def main():
     server = subprocess.Popen([str(cli), "host", str(state), "serve", str(runner)],
                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     socket = pathlib.Path("/tmp/cocoon-host-" + hashlib.sha256(os.fsencode(state)).hexdigest() + ".sock")
-    for _ in range(500):
-        if socket.exists():
-            break
-        if server.poll() is not None:
-            raise RuntimeError(server.stderr.read().decode(errors="replace"))
-        time.sleep(0.01)
-    else:
-        raise TimeoutError("host API socket readiness")
+    try:
+        for _ in range(500):
+            if socket.exists():
+                break
+            if server.poll() is not None:
+                raise RuntimeError(server.stderr.read().decode(errors="replace"))
+            time.sleep(0.01)
+        else:
+            raise TimeoutError("host API socket readiness")
+    except BaseException:
+        server.terminate()
+        server.wait(timeout=5)
+        socket.unlink(missing_ok=True)
+        raise
     authority = None
     branch = None
 
@@ -71,6 +77,15 @@ def main():
     def identity():
         return identity_for(vm, authority)
 
+    def guest_status():
+        response = api({"operation": "guest", "request": {"identity": identity(),
+            "operation": {"kind": "status"}}})
+        return response["result"]["Ok"]["nonce"]
+
+    def runner_events(active):
+        path = state / "vms" / vm / active["attempt"]["id"] / "events.jsonl"
+        return [json.loads(line)["event"] for line in path.read_text().splitlines()]
+
     try:
         authority = api({"operation": "start", "vm": vm})
         expected = bytes((index * 31) % 256 for index in range(12000))
@@ -83,6 +98,7 @@ def main():
             "kind": "exec", "argv": ["/bin/sh", "-c", "test -s data.bin && printf BINARY_PASS"],
             "cwd": "/workspace"}}})
         assert executed["result"]["Ok"]["stdout"] == "BINARY_PASS"
+        original_nonce = guest_status()
         first_generation = authority["generation"]
         first_attempt = authority["attempt"]["id"]
         api({"operation": "suspend", "vm": vm})
@@ -106,11 +122,18 @@ def main():
             authority = api({"operation": "resume", "vm": vm})
             assert authority["generation"] == first_generation + 1
         assert authority["attempt"]["id"] != first_attempt
+        recovered_nonce = guest_status()
+        events = runner_events(authority)
+        if args.corrupt_before_resume:
+            assert recovered_nonce != original_nonce and "vm_resumed" not in events
+        else:
+            assert recovered_nonce == original_nonce and "vm_resumed" in events
         resumed = api({"operation": "guest", "request": {"identity": identity(), "operation": {
             "kind": "exec", "argv": ["/bin/sh", "-c", "test -s data.bin && printf RESUME_PASS"],
             "cwd": "/workspace"}}})
         assert resumed["result"]["Ok"]["stdout"] == "RESUME_PASS"
         if args.automatic_suspend:
+            automatic_nonce = guest_status()
             api({"operation": "set_protection", "policy": {"enabled": True,
                 "minimum_free_percent": 100, "emergency_stop": True, "max_suspend_per_pass": 1}})
             for _ in range(300):
@@ -123,6 +146,7 @@ def main():
             api({"operation": "set_protection", "policy": {"enabled": True,
                 "minimum_free_percent": 1, "emergency_stop": True, "max_suspend_per_pass": 1}})
             authority = api({"operation": "resume", "vm": vm})
+            assert guest_status() == automatic_nonce and "vm_resumed" in runner_events(authority)
         artifact = api({"operation": "export", "request": {"identity": identity(), "operation": {
             "kind": "read", "path": "/workspace/data.bin"}},
             "guest_path": "/workspace/data.bin", "name": "artifact.bin"})
@@ -144,21 +168,29 @@ def main():
         assert branch_result["result"]["Ok"]["stdout"] == "BRANCH_PASS"
         api({"operation": "stop", "vm": branch})
         api({"operation": "rollback", "vm": vm, "baseline": image})
+        rollback_authority = api({"operation": "start", "vm": vm})
+        rolled_back = api({"operation": "guest", "request": {"identity": identity_for(vm, rollback_authority),
+            "operation": {"kind": "exec", "argv": ["/bin/sh", "-c",
+                "test ! -e data.bin && printf ROLLBACK_PASS"], "cwd": "/workspace"}}})
+        assert rolled_back["result"]["Ok"]["stdout"] == "ROLLBACK_PASS"
+        api({"operation": "stop", "vm": vm})
+        stopped = api({"operation": "show", "vm": vm})
         summary = {"schema": "cocoon-production-acceptance-v1", "passed": True,
                    "binary_bytes": len(expected), "artifact_sha256": artifact["sha256"],
-                   "generation": authority["generation"], "resumed": True,
+                   "generation": rollback_authority["generation"],
+                   "snapshot_resume": not args.corrupt_before_resume or args.automatic_suspend,
                    "cold_recovery": args.corrupt_before_resume, "automatic_suspend": args.automatic_suspend,
-                   "branch": True,
-                   "rollback": True, "state": stopped["state"]}
+                   "branch": True, "rollback_verified": True, "state": stopped["state"]}
     except BaseException as error:
+        cleanup_errors = []
         for target in {vm, branch} - {None}:
             try:
                 current = api({"operation": "show", "vm": target})
-                if current["state"] == "running":
-                    api({"operation": "stop", "vm": target})
-            except BaseException:
-                pass
-        (state / "failure.txt").write_text(str(error) + "\n")
+                if current["state"] not in ["prepared", "stopped", "suspended", "recovery_required"]:
+                    api({"operation": "emergency_stop", "vm": target})
+            except BaseException as cleanup_error:
+                cleanup_errors.append(str(cleanup_error))
+        (state / "failure.txt").write_text(str(error) + "\n" + "\n".join(cleanup_errors) + "\n")
         raise
     finally:
         server.terminate()
@@ -167,6 +199,7 @@ def main():
         except subprocess.TimeoutExpired:
             server.kill()
             server.wait()
+        socket.unlink(missing_ok=True)
     destination = state / "summary.json"
     destination.write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

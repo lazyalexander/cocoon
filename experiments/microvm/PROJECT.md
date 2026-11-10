@@ -33,8 +33,9 @@ for an already registered VM with the project fixture is:
 cocoon host ABSOLUTE_PRIVATE_STATE_DIR experiment project VM_UUID ABSOLUTE_SIGNED_RUNNER
 ```
 
-`vm start` remains unavailable. Do not pass a persistence-only fixture to the
-project experiment. Downloads and generated images/reports stay ignored locally.
+Use `experiment project` for this fixed path; the managed `vm start` entry is
+separate. Do not pass a persistence-only fixture to the project experiment.
+Downloads and generated images/reports stay ignored locally.
 The full kernel package is build input only; the image contains selected modules.
 
 ## What is exercised

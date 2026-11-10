@@ -6,7 +6,7 @@ mod vsock;
 
 #[cfg(target_os = "linux")]
 fn main() {
-    if let Err(error) = vsock::serve() {
+    if let Err(error) = execution::initialize_nonce().and_then(|_| vsock::serve()) {
         eprintln!("COCOON_HELPER_ERROR:{error}");
         std::process::exit(2);
     }

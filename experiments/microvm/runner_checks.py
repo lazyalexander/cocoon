@@ -79,6 +79,8 @@ class RunnerProtocolTests(unittest.TestCase):
         valid = [
             {"snapshotMode": "save", "snapshotPath": "/unused-state"},
             {"snapshotMode": "restore", "restorePath": "/unused-state"},
+            {"rootDisk": "/unused-root", "diskMode": "snapshot", "payload": "a" * 32,
+             "snapshotMode": "save", "snapshotPath": "/unused-state"},
         ]
         for change in valid:
             with self.subTest(valid=change):

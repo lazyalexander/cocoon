@@ -236,7 +236,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             report["guest_ready_ms"] = elapsed()
         }
         if req.snapshotMode == "save", report["snapshot_save_requested"] as? Bool != true,
-           text.contains("COCOON_SNAPSHOT_READY:" + req.token + "\n") {
+           text.contains("COCOON_SNAPSHOT_READY:" + req.token + ":") {
             report["snapshot_save_requested"] = true
             saveSnapshot()
         }
@@ -380,7 +380,7 @@ do {
         throw NSError(domain: "invalid experimental request", code: 1)
     }
     if let disk = req.rootDisk {
-        guard disk.hasPrefix("/"), let mode = req.diskMode, ["write", "read", "project"].contains(mode),
+        guard disk.hasPrefix("/"), let mode = req.diskMode, ["write", "read", "project", "snapshot"].contains(mode),
               let payload = req.payload, payload.count == 32,
               payload.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw NSError(domain: "invalid disk fixture request", code: 1)

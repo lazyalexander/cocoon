@@ -122,7 +122,7 @@ mod guest {
             std::io::stdout().flush()?;
             return Err(Command::new("/guest-helper").exec().into());
         }
-        if mode == "write" {
+        if mode == "write" || mode == "snapshot" {
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -142,6 +142,18 @@ mod guest {
         }
         println!("COCOON_ROOT:ext4:/dev/vda:{token}");
         println!("COCOON_PERSIST:{mode}:{payload}:{token}");
+        if mode == "snapshot" {
+            let mut counter = u64::from_str_radix(&payload[..8], 16)?;
+            println!("COCOON_SNAPSHOT_READY:{token}:{counter}");
+            std::io::stdout().flush()?;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                counter += 1;
+                println!("COCOON_RESUMED:{token}:{counter}");
+                println!("COCOON_DONE:{token}");
+                std::io::stdout().flush()?;
+            }
+        }
         println!("COCOON_DONE:{token}");
         std::io::stdout().flush()?;
         loop {

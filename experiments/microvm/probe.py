@@ -109,7 +109,8 @@ def build(linker):
                     str(BUILD / "init.o"), "-o", str(BUILD / "init")], check=True, timeout=30)
     check_elf((BUILD / "init").read_bytes())
     combined = BUILD / "main.swift"
-    combined.write_text((ROOT / "runner.swift").read_text() + "\n" + (ROOT / "ProjectChannel.swift").read_text())
+    combined.write_text("\n".join((ROOT / name).read_text() for name in
+                                  ["runner.swift", "ProjectChannel.swift", "ControlChannel.swift"]))
     subprocess.run(["/usr/bin/swiftc", "-swift-version", "5", "-O", "-module-cache-path",
                     str(BUILD / "modules"), str(combined), "-o", str(BUILD / "cocoon-vz"),
                     "-framework", "Virtualization"], check=True, timeout=180)

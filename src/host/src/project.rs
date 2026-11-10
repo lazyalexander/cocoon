@@ -51,9 +51,11 @@ pub(crate) fn requests(attempt: &str) -> Vec<Request> {
         .enumerate()
         .map(|(i, operation)| Request {
             identity: Identity {
+                vm: String::new(),
                 caller: "local-project-acceptance".into(),
                 task: task.clone(),
                 attempt: attempt.into(),
+                generation: 0,
                 request: i as u32,
             },
             operation,

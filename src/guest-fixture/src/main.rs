@@ -116,7 +116,7 @@ mod guest {
             return Err("executable is not rooted on disk".into());
         }
         println!("COCOON_READY:{token}");
-        if mode == "project" {
+        if mode == "project" || mode == "agent" {
             mount_fs("devtmpfs", "/dev", "devtmpfs")?;
             println!("COCOON_ROOT:ext4:/dev/vda:{token}");
             std::io::stdout().flush()?;
@@ -132,7 +132,7 @@ mod guest {
             file.write_all(payload.as_bytes())?;
             file.sync_all()?;
             fs::File::open("/")?.sync_all()?;
-        } else if mode != "read" {
+        } else if mode != "read" && mode != "agent" {
             return Err("invalid fixture mode".into());
         }
         if fs::read("/persistent")? != payload.as_bytes()

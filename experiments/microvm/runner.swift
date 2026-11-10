@@ -16,6 +16,8 @@ struct Request: Decodable {
     let snapshotMode: String?
     let snapshotPath: String?
     let restorePath: String?
+    let eventLog: String?
+    let controlSocket: String?
 }
 
 func hostDiagnostics() -> [String: Any] {
@@ -42,6 +44,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
     let origin = DispatchTime.now().uptimeNanoseconds
     var vm: VZVirtualMachine?
     var serialSource: DispatchSourceRead?
+    var controlSource: DispatchSourceRead?
     var signalSources: [DispatchSourceSignal] = []
     var request: Request?
     var bytes = Data()
@@ -59,10 +62,33 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         Double(DispatchTime.now().uptimeNanoseconds - origin) / 1_000_000
     }
 
+    func emitEvent(_ name: String) {
+        guard let path = request?.eventLog else { return }
+        let url = URL(fileURLWithPath: path)
+        do {
+            let event: [String: Any] = ["event": name, "token": request?.token ?? "",
+                                        "termination_confirmed": report["termination_confirmed"] as? Bool ?? false]
+            let data = try JSONSerialization.data(withJSONObject: event, options: [.sortedKeys])
+            if FileManager.default.fileExists(atPath: path) {
+                let output = try FileHandle(forWritingTo: url)
+                try output.seekToEnd()
+                try output.write(contentsOf: data)
+                try output.write(contentsOf: Data("\n".utf8))
+                try output.synchronize()
+                try output.close()
+            } else {
+                try (data + Data("\n".utf8)).write(to: url, options: [.withoutOverwriting])
+            }
+        } catch {
+            report["event_error"] = error.localizedDescription
+        }
+    }
+
     func finish(_ status: String, _ code: Int32) {
         guard !finished else { return }
         finished = true
         serialSource?.cancel()
+        controlSource?.cancel()
         signalSources.forEach { $0.cancel() }
         report["status"] = status
         report["runner_elapsed_ms"] = elapsed()
@@ -71,6 +97,9 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         var usage = rusage()
         if getrusage(RUSAGE_SELF, &usage) == 0 {
             report["runner_peak_rss_bytes"] = usage.ru_maxrss
+        }
+        if report["termination_confirmed"] as? Bool == true {
+            emitEvent("stopped")
         }
         let data = try! JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         FileHandle.standardOutput.write(data)
@@ -192,6 +221,10 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
                 return
             }
         }
+        if req.diskMode == "agent" {
+            config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+            report["vsock_devices"] = 1
+        }
         // No network, graphics or shared directories. Optional project vsock only.
         do { try config.validate() } catch {
             let e = error as NSError
@@ -203,6 +236,15 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         guard installSerialReader() else { return }
         let machine = VZVirtualMachine(configuration: config, queue: queue)
         vm = machine
+        if let control = req.controlSocket {
+            do {
+                controlSource = try installControlChannel(path: control, queue: queue) { [weak self] in self?.vm }
+            } catch {
+                report["error"] = error.localizedDescription
+                finish("setup_failed", 2)
+                return
+            }
+        }
         machine.delegate = self
         installCancellation()
         report["start_requested_ms"] = elapsed()
@@ -274,9 +316,13 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             report["snapshot_save_requested"] = true
             saveSnapshot()
         }
-        if req.project != nil && !projectStarted && text.contains("COCOON_HELPER_READY\n") {
+        if (req.project != nil || req.diskMode == "agent") && !projectStarted && text.contains("COCOON_HELPER_READY\n") {
             projectStarted = true
-            connectProject()
+            if req.diskMode == "agent" {
+                emitEvent("guest_ready")
+            } else {
+                connectProject()
+            }
         }
         if report["guest_done"] as? Bool != true && text.contains("COCOON_DONE:" + req.token + "\n") {
             report["guest_done"] = true
@@ -403,18 +449,19 @@ do {
     guard data.count <= 16384 else { throw NSError(domain: "request too large", code: 1) }
     let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     let allowed = Set(["kernel", "initrd", "token", "memoryMiB", "seconds"])
-    let optional = Set(["rootDisk", "diskMode", "payload", "project", "snapshotMode", "snapshotPath", "restorePath"])
+    let optional = Set(["rootDisk", "diskMode", "payload", "project", "snapshotMode", "snapshotPath", "restorePath", "eventLog", "controlSocket"])
     guard let fields = fields, Set(fields.keys).isSuperset(of: allowed),
           Set(fields.keys).isSubset(of: allowed.union(optional)) else {
         throw NSError(domain: "unknown or missing request fields", code: 1)
     }
     let req = try JSONDecoder().decode(Request.self, from: data)
     guard req.token.count == 32, req.token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
-          (128...4096).contains(req.memoryMiB), (1...60).contains(req.seconds) else {
+          (128...4096).contains(req.memoryMiB),
+          (1...60).contains(req.seconds) || req.diskMode == "agent" && (1...3600).contains(req.seconds) else {
         throw NSError(domain: "invalid experimental request", code: 1)
     }
     if let disk = req.rootDisk {
-        guard disk.hasPrefix("/"), let mode = req.diskMode, ["write", "read", "project", "snapshot"].contains(mode),
+        guard disk.hasPrefix("/"), let mode = req.diskMode, ["write", "read", "project", "snapshot", "agent"].contains(mode),
               let payload = req.payload, payload.count == 32,
               payload.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw NSError(domain: "invalid disk fixture request", code: 1)
@@ -424,6 +471,20 @@ do {
     }
     guard (req.diskMode == "project") == (req.project != nil), req.project == nil || req.project!.hasPrefix("/") else {
         throw NSError(domain: "invalid project fixture request", code: 1)
+    }
+    if let events = req.eventLog {
+        guard events.hasPrefix("/"), events.count <= 4096,
+              events != req.kernel, events != req.initrd, events != req.rootDisk,
+              events != req.snapshotPath, events != req.restorePath else {
+            throw NSError(domain: "invalid event log", code: 1)
+        }
+    }
+    if let control = req.controlSocket {
+        guard req.diskMode == "agent", control.hasPrefix("/"), control.count <= 100,
+              control != req.kernel, control != req.initrd, control != req.rootDisk,
+              control != req.eventLog, control != req.snapshotPath, control != req.restorePath else {
+            throw NSError(domain: "invalid control socket", code: 1)
+        }
     }
     if let mode = req.snapshotMode {
         let path = mode == "save" ? req.snapshotPath : req.restorePath

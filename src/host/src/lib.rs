@@ -8,27 +8,35 @@
 //! ```
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
+    collections::HashMap,
     fs,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
+    process::Child,
+    sync::{Arc, Mutex},
 };
 use uuid::Uuid;
 
+mod api;
 mod disk;
 mod error;
 mod journal;
+mod lifecycle;
 pub mod persistence;
 mod project;
 mod types;
+pub use api::{HostOperation, HostRequest, HostResponse};
 use disk::{copy_new, hash, sync_directory};
 pub use error::{Error, Result};
 pub use journal::JournalEntry;
+pub use lifecycle::ExecutionRecord;
 pub use types::*;
 /// Only trusted host code may construct this interface. Socket ACLs are not
 /// isolation from arbitrary code running under the same macOS user.
 pub struct Manager {
     root: PathBuf,
     db: Connection,
+    children: Arc<Mutex<HashMap<AttemptId, Child>>>,
 }
 impl Manager {
     pub fn open(root: &Path) -> Result<Self> {
@@ -67,10 +75,12 @@ impl Manager {
             CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS boots(id TEXT PRIMARY KEY, vm TEXT NOT NULL, status TEXT NOT NULL, report TEXT);
             CREATE TABLE IF NOT EXISTS journal(sequence INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, vm TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, previous_sha256 TEXT NOT NULL, sha256 TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS executions(attempt TEXT PRIMARY KEY, vm TEXT NOT NULL, record TEXT NOT NULL);
             PRAGMA user_version=2; COMMIT;")?;
         Ok(Self {
             root: root.to_owned(),
             db,
+            children: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     fn begin(&self, id: OperationId, kind: &str, target: impl std::fmt::Display) -> Result<()> {
@@ -225,7 +235,8 @@ impl Manager {
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }
     pub fn start(&self, id: VmId) -> Result<()> {
-        self.get(id)?;
-        Err("execution unavailable: persistent-disk VM backend is not qualified; no native fallback".into())
+        let runner =
+            std::env::var_os("COCOON_RUNNER").ok_or("COCOON_RUNNER must name the signed runner")?;
+        self.start_with_runner(id, Path::new(&runner)).map(|_| ())
     }
 }

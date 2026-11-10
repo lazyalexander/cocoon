@@ -87,6 +87,16 @@ class RunnerProtocolTests(unittest.TestCase):
                 report = self.response(json.dumps({**base, **change}).encode())
                 self.assertNotEqual(report["status"], "invalid_request")
 
+    def test_agent_mode_and_event_log_are_explicit_and_bounded(self):
+        base = {"kernel": "/unused-kernel", "initrd": "/unused-initrd",
+                "token": "a" * 32, "memoryMiB": 512, "seconds": 60,
+                "rootDisk": "/unused-root", "diskMode": "agent", "payload": "b" * 32}
+        for event_log in ["relative-events", "/" + "a" * 4096, "/unused-kernel", "/unused-root"]:
+            with self.subTest(event_log=event_log):
+                self.request(json.dumps({**base, "eventLog": event_log}).encode())
+        report = self.response(json.dumps({**base, "eventLog": "/unused-events"}).encode())
+        self.assertNotEqual(report["status"], "invalid_request")
+
     def test_existing_snapshot_destination_refuses_before_vm_or_side_effects(self):
         with tempfile.TemporaryDirectory(prefix="cocoon-snapshot-request-") as directory:
             state = pathlib.Path(directory) / "state.vz"

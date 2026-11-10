@@ -34,52 +34,59 @@ pub fn serve() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     println!("COCOON_HELPER_READY");
-    // One connection per boot; disconnect never replays commands.
-    // SAFETY: null address arguments request no peer-address output.
-    let fd = unsafe {
-        libc::accept4(
-            listener.as_raw_fd(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            libc::SOCK_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
+    loop {
+        // SAFETY: null address arguments request no peer-address output.
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: accept returned a new uniquely owned fd.
+        let mut stream = unsafe { File::from_raw_fd(fd) };
+        let mut previous: Option<(String, String, String, u64)> = None;
+        for sequence in 0..16 {
+            let request: Request = match receive(&mut stream) {
+                Ok(request) => request,
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(error) => return Err(error),
+            };
+            request.validate()?;
+            if request.identity.request != sequence {
+                return Err(io::Error::other("out-of-order request; no replay"));
+            }
+            let identity = (
+                request.identity.caller.clone(),
+                request.identity.task.clone(),
+                request.identity.attempt.clone(),
+                request.identity.generation,
+            );
+            if let Some(ref expected) = previous
+                && expected != &identity
+            {
+                return Err(io::Error::other("identity changed"));
+            }
+            let result = crate::execution::execute(&request.operation).map_err(|e| e.to_string());
+            let failed = result.is_err();
+            send(
+                &Response {
+                    identity: request.identity.clone(),
+                    result,
+                },
+                &mut stream,
+            )?;
+            previous = Some(identity);
+            if failed {
+                break;
+            }
+        }
     }
-    // SAFETY: accept returned a new uniquely owned fd.
-    let mut stream = unsafe { File::from_raw_fd(fd) };
-    let mut previous: Option<(String, String, String)> = None;
-    for sequence in 0..16 {
-        let request: Request = receive(&mut stream)?;
-        request.validate()?;
-        if request.identity.request != sequence {
-            return Err(io::Error::other("out-of-order request; no replay"));
-        }
-        let identity = (
-            request.identity.caller.clone(),
-            request.identity.task.clone(),
-            request.identity.attempt.clone(),
-        );
-        if let Some(ref expected) = previous
-            && expected != &identity
-        {
-            return Err(io::Error::other("identity changed"));
-        }
-        let result = crate::execution::execute(&request.operation).map_err(|e| e.to_string());
-        let failed = result.is_err();
-        send(
-            &Response {
-                identity: request.identity.clone(),
-                result,
-            },
-            &mut stream,
-        )?;
-        // Own identity values rather than retaining request references.
-        previous = Some(identity);
-        if failed {
-            break;
-        }
-    }
-    Ok(())
 }

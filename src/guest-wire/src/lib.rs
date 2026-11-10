@@ -9,9 +9,13 @@ pub const PORT: u32 = 1024;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
+    #[serde(default)]
+    pub vm: String,
     pub caller: String,
     pub task: String,
     pub attempt: String,
+    #[serde(default)]
+    pub generation: u64,
     pub request: u32,
 }
 
@@ -125,9 +129,11 @@ mod tests {
     #[test]
     fn host_lifecycle_operations_and_relative_commands_are_rejected() {
         let identity = Identity {
+            vm: "vm".into(),
             caller: "agent".into(),
             task: "task".into(),
             attempt: "attempt".into(),
+            generation: 0,
             request: 0,
         };
         let value = serde_json::json!({"identity": identity, "operation": {"kind":"destroy", "vm":"victim"}});
@@ -146,9 +152,11 @@ mod tests {
     fn correlation_roundtrip_and_strict_schema() {
         let request = Request {
             identity: Identity {
+                vm: "vm".into(),
                 caller: "agent".into(),
                 task: "task".into(),
                 attempt: "attempt".into(),
+                generation: 0,
                 request: 1,
             },
             operation: Operation::Read {

@@ -8,6 +8,7 @@ struct Request: Decodable {
     let initrd: String
     let token: String
     let memoryMiB: UInt64
+    let lifecycle: Bool?
     let seconds: Double
 }
 
@@ -32,6 +33,13 @@ func hostDiagnostics() -> [String: Any] {
 final class Runner: NSObject, VZVirtualMachineDelegate {
     let queue = DispatchQueue(label: "cocoon.vm")
     let serial = Pipe()
+    var input: Pipe?
+    let commands = ["A", "S", "A", "R", "A"]
+    let values = ["1", "1", "2", "1", "2"]
+    var cycle = 0
+    var cycling = false
+    var responseOffset: Int?
+    var transitions = [[String: Double]]()
     let origin = DispatchTime.now().uptimeNanoseconds
     var vm: VZVirtualMachine?
     var deadlineTimer: DispatchSourceTimer?
@@ -125,8 +133,9 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         config.cpuCount = 1
         config.memorySize = req.memoryMiB * 1024 * 1024
         let port = VZVirtioConsoleDeviceSerialPortConfiguration()
+        if req.lifecycle == true { input = Pipe() }
         port.attachment = VZFileHandleSerialPortAttachment(
-            fileHandleForReading: nil, fileHandleForWriting: serial.fileHandleForWriting)
+            fileHandleForReading: input?.fileHandleForReading, fileHandleForWriting: serial.fileHandleForWriting)
         config.serialPorts = [port]
         // No disk, network, graphics, shared directory, vsock or balloon device.
         do { try config.validate() } catch {
@@ -153,11 +162,39 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             switch result {
             case .success:
                 self.report["vm_running_ms"] = self.elapsed()
-                if self.stopping { self.performStop() }
+                if self.stopping { self.performStop() } else { self.beginCycle() }
             case .failure(let error):
                 self.report["error"] = error.localizedDescription
                 // A failed start is not asserted to be confirmed termination.
                 self.finish("start_failed", 2)
+            }
+        }
+    }
+
+    func beginCycle() {
+        guard request?.lifecycle == true, !cycling, !stopping,
+              report["guest_ready"] as? Bool == true, report["vm_running_ms"] != nil,
+              let machine = vm, machine.state == .running else { return }
+        cycling = true
+        let start = elapsed()
+        machine.pause { result in
+            if self.stopping { self.performStop(); return }
+            guard case .success = result, machine.state == .paused else { self.stop("pause_failed"); return }
+            let paused = self.elapsed()
+            self.queue.asyncAfter(deadline: .now() + .milliseconds(50)) {
+                guard !self.stopping else { return }
+                let wake = self.elapsed()
+                machine.resume { result in
+                    if self.stopping { self.performStop(); return }
+                    guard case .success = result, machine.state == .running else { self.stop("resume_failed"); return }
+                    self.transitions.append(["pause_ms": paused - start, "paused_ms": wake - paused,
+                                             "resume_ms": self.elapsed() - wake])
+                    self.report["transitions"] = self.transitions
+                    self.responseOffset = self.bytes.count
+                    do {
+                        try self.input!.fileHandleForWriting.write(contentsOf: Data((self.commands[self.cycle] + "\n").utf8))
+                    } catch { self.stop("input_failed") }
+                }
             }
         }
     }
@@ -179,6 +216,22 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         if report["guest_ready"] as? Bool != true && text.contains("COCOON_READY:" + req.token + "\n") {
             report["guest_ready"] = true
             report["guest_ready_ms"] = elapsed()
+        }
+        if req.lifecycle == true {
+            if let offset = responseOffset {
+                let fresh = String(decoding: bytes.dropFirst(offset), as: UTF8.self)
+                    .replacingOccurrences(of: "\r\n", with: "\n")
+                let expected = "COCOON_STATE:" + req.token + commands[cycle] + values[cycle]
+                if fresh.split(separator: "\n", omittingEmptySubsequences: false).dropLast().contains(Substring(expected)) {
+                    cycle += 1
+                    report["verified_cycles"] = cycle
+                    responseOffset = nil
+                    cycling = false
+                    if cycle == commands.count { stop("lifecycle_complete"); return }
+                }
+            }
+            beginCycle()
+            return
         }
         if report["guest_done"] as? Bool != true && text.contains("COCOON_DONE:" + req.token + "\n") {
             report["guest_done"] = true
@@ -238,7 +291,7 @@ do {
     guard data.count <= 16384 else { throw NSError(domain: "request too large", code: 1) }
     let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     let allowed = Set(["kernel", "initrd", "token", "memoryMiB", "seconds"])
-    guard let fields = fields, Set(fields.keys) == allowed else {
+    guard let fields = fields, (Set(fields.keys) == allowed || Set(fields.keys) == allowed.union(["lifecycle"])) else {
         throw NSError(domain: "unknown or missing request fields", code: 1)
     }
     let req = try JSONDecoder().decode(Request.self, from: data)

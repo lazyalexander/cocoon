@@ -90,3 +90,9 @@ guest 内核、硬件环境和缓存条件；当前不宣称性能相当。
 Ubuntu 6.8.0-146-generic ARM64 内核在 1 vCPU、128 MiB 配置下通过固定输入输出、期限停止和取消三项验收。复用同一内核、保留宿主文件缓存的 30 次 roundtrip 全部通过。guest 就绪时间中位数 367.57 ms，P95 为 380.13 ms。框架运行回调中位数 100.40 ms。启动器峰值 RSS 中位数为 9.44 MiB，框架辅助进程另计。
 
 原始启动器（SHA-256 前缀 88107d61）在一次 10 秒期限测试中晚约 663 ms 请求停止，随后 4.37 ms 确认停止。该用例只验收停止原因与终止状态。新版使用严格计时器并记录 deadline_due_ms，实机偏差仍需复测。
+
+lifecycle 用例在同一台驻留内存的 VM 上执行五轮暂停和恢复。每次框架确认暂停后等待 50 ms，恢复后通过串口发出命令。PID 1 依次递增、保存、递增、恢复、再递增计数器。验收要求依次返回 1、1、2、1、2，并由宿主确认最终停止。检查点位于 guest 内存中，仅覆盖计数器；整机快照和启动器退出后的恢复仍待实现。
+
+```sh
+python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/Image --case lifecycle
+```

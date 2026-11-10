@@ -38,7 +38,22 @@ __attribute__((noreturn)) void _start(void) {
     if (read_file("/token", token, sizeof(token)) == 32) {
         marker("COCOON_READY:", 13, token);
         long count = read_file("/input", input, sizeof(input));
-        if (read_file("/mode", mode, 1) == 1 && mode[0] == 'r' && count >= 0) {
+        long has_mode = read_file("/mode", mode, 1);
+        if (has_mode == 1 && mode[0] == 'l') {
+            char command, value = '0', saved = '0';
+            while (call(63, output, (long)&command, 1, 0) == 1) {
+                if (command == 'A' && value < '9') value++;
+                else if (command == 'S') saved = value;
+                else if (command == 'R') value = saved;
+                else continue;
+                write_all("COCOON_STATE:", 13);
+                write_all(token, 32);
+                write_all(&command, 1);
+                write_all(&value, 1);
+                write_all("\n", 1);
+            }
+        }
+        if (has_mode == 1 && mode[0] == 'r' && count >= 0) {
             for (long i = 0; i < count; i++)
                 if (input[i] >= 'a' && input[i] <= 'z') input[i] -= 'a' - 'A';
             marker("COCOON_OUTPUT:", 14, token);

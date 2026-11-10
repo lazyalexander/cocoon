@@ -105,3 +105,9 @@ guest kernels, hardware context and cache conditions; no parity is claimed.
 Ubuntu 6.8.0-146-generic ARM64 passed fixed roundtrip, deadline and cancellation on a 1-vCPU, 128 MiB guest. All 30 repeated roundtrips passed using the same kernel with host filesystem caches retained. Guest readiness had a median of 367.57 ms and P95 of 380.13 ms. The median framework running callback was 100.40 ms. Median runner peak RSS was 9.44 MiB, excluding framework helpers.
 
 In one 10-second deadline trial the baseline runner (SHA-256 prefix 88107d61) requested stop about 663 ms late, then confirmed stop in 4.37 ms. This case checks stop reason and termination. The revised runner uses a strict dispatch timer and reports deadline_due_ms for measuring lateness on hardware.
+
+The lifecycle case pauses one resident VM five times. After each confirmed pause it waits 50 ms, resumes and sends a serial command. PID 1 increments, saves, increments, restores and increments a counter. Acceptance requires the ordered values 1, 1, 2, 1, 2 and confirmed final stop. The checkpoint lives in guest memory and covers only the counter. Full machine snapshots and recovery after runner exit remain open.
+
+```sh
+python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/Image --case lifecycle
+```

@@ -189,10 +189,12 @@ def boot(args, emit=True):
         ("init", stat.S_IFREG | 0o755, init, 0, 0),
         ("input", stat.S_IFREG | 0o400, payload, 0, 0),
         ("token", stat.S_IFREG | 0o400, run_id.encode(), 0, 0),
-        ("mode", stat.S_IFREG | 0o400, b"r" if args.case == "roundtrip" else b"h", 0, 0),
+        ("mode", stat.S_IFREG | 0o400, {"roundtrip": b"r", "lifecycle": b"l"}.get(args.case, b"h"), 0, 0),
     ]))
     request = {"kernel": str(kernel), "initrd": str(initrd), "token": run_id,
                "memoryMiB": args.memory_mib, "seconds": args.seconds}
+    if args.case == "lifecycle":
+        request["lifecycle"] = True
     request_path = run / "request.json"
     request_path.write_text(json.dumps(request))
     preparation_start = time.monotonic()
@@ -216,6 +218,9 @@ def boot(args, emit=True):
         common = result.returncode == 0 and observed.get("termination_confirmed") is True and observed.get("guest_ready") is True
         if args.case == "roundtrip":
             report["passed"] = common and report["output_matched"] and observed.get("stop_reason") == "guest_done"
+        elif args.case == "lifecycle":
+            report["passed"] = (common and observed.get("verified_cycles") == 5
+                                and observed.get("stop_reason") == "lifecycle_complete")
         else:
             reason = "signal" if args.case == "cancel" else "deadline"
             report["passed"] = common and observed.get("stop_reason") == reason and observed.get("guest_done") is False
@@ -267,7 +272,7 @@ def main():
     for name in ["boot", "benchmark"]:
         launch = commands.add_parser(name)
         launch.add_argument("--kernel", required=True, type=pathlib.Path)
-        launch.add_argument("--case", choices=["roundtrip", "deadline", "cancel"], default="roundtrip")
+        launch.add_argument("--case", choices=["roundtrip", "deadline", "cancel", "lifecycle"], default="roundtrip")
         launch.add_argument("--memory-mib", type=int, choices=range(128, 4097), metavar="128..4096", default=128)
         launch.add_argument("--seconds", type=int, choices=range(1, 61), metavar="1..60", default=10)
         if name == "benchmark":

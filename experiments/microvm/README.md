@@ -20,9 +20,13 @@ No package installation or download is performed by these commands.
 
 ```sh
 python3 experiments/microvm/probe.py build
+python3 experiments/microvm/probe.py doctor
+python3 experiments/microvm/runner_checks.py experiments/microvm/build/cocoon-vz
 python3 -m unittest discover -s experiments/microvm -p 'test_*.py' -v
+python3 experiments/microvm/probe.py check-kernel --kernel /absolute/path/to/Image
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case roundtrip
 python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case deadline --seconds 2
+python3 experiments/microvm/probe.py boot --kernel /absolute/path/to/Image --case cancel --seconds 10
 python3 experiments/microvm/probe.py benchmark --kernel /absolute/path/to/Image --samples 30
 ```
 
@@ -30,6 +34,15 @@ An existing uncompressed Linux ARM64 Image must support initramfs, gzip, ELF and
 built-in virtio-console. The kernel is operator-supplied, hashed, opened read-only
 and never redistributed by this experiment. A generic desktop kernel is useful
 for compatibility testing but is not a minimal production kernel.
+
+`check-kernel` inspects embedded IKCONFIG when available. It requires built-in
+`CONFIG_BLK_DEV_INITRD`, `CONFIG_RD_GZIP`, `CONFIG_BINFMT_ELF`, `CONFIG_VIRTIO`
+and `CONFIG_VIRTIO_CONSOLE`. A candidate configuration is not proof of boot.
+Absent embedded configuration is reported as unknown, not compatible; boot may
+still be attempted with operator-supplied knowledge. A known incompatible or
+malformed embedded configuration is rejected before creating a VM attempt.
+Configuration decompression is limited to 2 MiB. This is a harness check; the
+native runner itself is an experimental internal interface, not an admission API.
 
 Build outputs go under ignored `build/`. Private requests, input image, logs and
 evidence go under ignored `runs/`, with a new private directory for each attempt.
@@ -47,11 +60,26 @@ marker. The host must stop it after the selected deadline. Both cases require a
 successful framework stop callback and stopped state (or an observed guest stop).
 A readiness marker is workload evidence, not termination evidence or a grant.
 
+The `cancel` case uses the waiting guest and sends SIGTERM to the owned runner
+after two seconds (or half the deadline if shorter). The runner handles SIGTERM
+and SIGINT on its VM queue, requests a framework stop and must still confirm
+termination. A signal arriving before guest readiness does not pass acceptance.
+Serial reads are nonblocking, at most 4 KiB per event, and processed on the VM
+queue; guest output does not accumulate in a separate callback queue. Further
+output is drained without retention once stopping begins.
+
+The kernel command line uses `panic=0` to prevent automatic reboot after panic.
+A serial panic message requests host stop with reason `guest_panic`; it is an
+untrusted diagnostic hint and never proves either a panic or VM termination.
 Serial capture is capped at 64 KiB. The runner has a 5-second stop watchdog;
 the Python harness adds a final process timeout. Watchdog expiry is recorded as
 unconfirmed termination, never a pass or an automatic retry. There is no durable
 supervisor, crash reconciliation, caller authentication or production resource
 accounting in this experiment.
+
+The harness kills and reaps its local runner after an outer timeout or an
+interruption, while preserving unknown VM termination. This is local cleanup,
+not a substitute for a durable independent supervisor or VM reconciliation.
 
 The requested initial VM size is 1 vCPU and 128 MiB. Validation may refuse it;
 only a real successful boot establishes support. No environment checks are
@@ -74,11 +102,29 @@ guest kernels, hardware context and cache conditions; no parity is claimed.
 
 ## Current observation
 
-The ARM64 guest init and optimized native runner build successfully. Both real
-boot cases currently stop at configuration validation with `VZErrorDomain` code 2
-in the managed execution context. Linux startup, roundtrip and deadline-stop
-acceptance remain unqualified. The earlier Hypervisor context probe succeeded,
-so the framework refusal needs diagnosis in the actual host environment.
+The ARM64 guest init and optimized native runner build successfully. The managed
+execution context refuses framework configuration and cannot read the two host
+capability sysctls (EPERM). An operator-run `doctor` in a normal terminal reports
+framework support and both capability values as 1.
+
+An operator-run roundtrip reached framework running state at approximately
+168 ms and confirmed host stop. The guest never emitted readiness: its LinuxKit
+kernel has `CONFIG_BLK_DEV_INITRD` disabled and panicked while trying to mount a
+root filesystem. The previous `panic=-1` command line caused immediate reboot,
+repeating panic output until the serial cap. The harness now rejects that known
+incompatible configuration, and panic reboot is disabled. No raw private reports
+or operator kernel binaries are redistributed here.
+
+This establishes observed VM startup and stop for that failed attempt, not guest
+roundtrip, deadline or cancellation acceptance. The 168 ms framework callback is
+not guest readiness or a successful boot benchmark. A compatible kernel and real
+acceptance runs are still required. The kernel-free `doctor` never creates a VM;
+its private reports are capability diagnostics, not boot benchmarks.
+
+Native runner protocol checks reject unknown fields, invalid limits, malformed
+JSON and requests over 16 KiB before creating a VM. The macOS CI job builds and
+signs the runner and runs those checks; it does not boot or qualify a guest.
+Python harness process tests likewise do not establish VM cancellation support.
 
 The implementation configures fewer devices than the earlier 1 GiB preflight,
 but this does not establish working 128 MiB guests or Firecracker-equivalent

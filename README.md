@@ -7,7 +7,8 @@ The first target is headless Linux ARM64 execution on Apple Silicon macOS.
 an-agent is the intended first consumer, not a runtime dependency.
 
 **Current status: contract prototype and a compiled minimal macOS VM experiment.
-Real Linux guest startup remains blocked at framework configuration validation;
+An operator-run VM starts Linux and confirms host stop, but the supplied kernel
+cannot load initramfs. Guest workload acceptance is still pending;
 no production execution backend is qualified.**
 
 ## Model
@@ -45,13 +46,18 @@ freestanding ARM64 Linux init and an optimized native framework runner with no
 OCI package dependency. It includes input/output, deadline-stop acceptance and
 a repeated-boot benchmark harness. All guest acceptance is still pending.
 
+The kernel-free `doctor` command records capability-read errors separately from
+hardware support. Native runner protocol checks run on macOS CI without booting
+a guest. Cancellation and bounded serial handling remain experimental until real
+VM acceptance succeeds.
+
 The earlier empty-context probe remains under `experiments/macos-preflight/`.
 Neither experiment depends on an-agent or starts existing Docker/Lima machines.
 
 ## Next acceptance gate
 
-Resolve the observed Virtualization.framework availability failure, select a
-minimal Linux ARM64 kernel and prove one owned VM can start, run offline, return
+Select a compatible minimal Linux ARM64 kernel and prove one owned VM can start,
+run offline, return
 the fixed transformed input and stop at a deadline. The current experiment uses
 Virtualization.framework directly; OCI management is deferred.
 Only then connect a real backend to admission, durable ownership, reconciliation

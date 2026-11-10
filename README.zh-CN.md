@@ -7,7 +7,8 @@ Apple Silicon macOS 上无头运行 Linux ARM64。an-agent 是预期的首个使
 不属于运行时依赖。
 
 **当前状态：任务契约原型，以及已经编译的最小 macOS VM 实验。
-真实 Linux guest 启动仍被框架配置校验阻塞；尚无通过资格验收的生产执行后端。**
+使用者已启动 Linux 并由宿主确认停止，但所用内核不支持 initramfs；
+guest 工作负载验收仍未通过，尚无通过资格验收的生产执行后端。**
 
 ## 模型
 
@@ -42,12 +43,16 @@ cargo run --offline -- plan examples/task.json
 不依赖 OCI 管理包。实验包含输入输出、期限停止验收与重复启动基准工具。
 所有 guest 验收仍未通过。
 
+无须内核的 `doctor` 命令将能力信息读取错误与硬件支持情况分开记录。
+原生启动器协议检查在 macOS CI 上运行，不启动 guest。取消和有界串口处理仍属
+实验能力，必须通过真实 VM 验收才能宣称有效。
+
 较早的空上下文预检保留在 `experiments/macos-preflight/`。
 两个实验均不依赖 an-agent，也不会启动现有 Docker 或 Lima 虚拟机。
 
 ## 下一阶段验收
 
-查明 Virtualization.framework 不可用的原因，选择最小 Linux ARM64 内核，
+选择兼容的最小 Linux ARM64 内核，
 证明一个归属明确的 VM 能启动、离线运行、返回固定输入的转换结果并在期限到达后停止。
 当前实验直接使用 Virtualization.framework；OCI 管理延后。
 通过这些验收后，再接入真实准入、持久监督、故障对账与产物保管机制。

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import probe
-from probe import cpio, check_elf
+from probe import cpio, check_elf, run_guest
 
 
 def unpack(archive):
@@ -33,6 +33,70 @@ def unpack(archive):
 
 
 class GuestImageTests(unittest.TestCase):
+    def test_kernel_config_rejects_unsupported_initrd_before_creating_attempt(self):
+        header = bytearray(64)
+        header[56:60] = b"ARM\x64"
+        config = (b"# CONFIG_BLK_DEV_INITRD is not set\nCONFIG_BINFMT_ELF=y\n"
+                  b"CONFIG_VIRTIO=y\nCONFIG_VIRTIO_CONSOLE=y\n")
+        with tempfile.TemporaryDirectory() as directory:
+            kernel = pathlib.Path(directory) / "Image"
+            kernel.write_bytes(header + b"IKCFG_ST" + gzip.compress(config) + b"IKCFG_ED")
+            report = probe.check_kernel(kernel)
+            self.assertEqual(report["compatibility"], "incompatible")
+            self.assertIn("CONFIG_BLK_DEV_INITRD", report["error"])
+            with patch.object(probe, "run_guest") as launch, patch.object(probe, "ROOT", kernel.parent):
+                with self.assertRaisesRegex(ValueError, "CONFIG_BLK_DEV_INITRD"):
+                    probe.boot(SimpleNamespace(kernel=kernel))
+                launch.assert_not_called()
+                self.assertFalse((kernel.parent / "runs").exists())
+
+    def test_kernel_config_distinguishes_unknown_candidate_and_invalid_data(self):
+        header = bytearray(64)
+        header[56:60] = b"ARM\x64"
+        required = ["BLK_DEV_INITRD", "RD_GZIP", "BINFMT_ELF", "VIRTIO", "VIRTIO_CONSOLE"]
+        config = "".join(f"CONFIG_{name}=y\n" for name in required).encode()
+        with tempfile.TemporaryDirectory() as directory:
+            kernel = pathlib.Path(directory) / "Image"
+            kernel.write_bytes(header)
+            self.assertEqual(probe.check_kernel(kernel)["compatibility"], "unknown")
+            kernel.write_bytes(header + b"IKCFG_ST" + gzip.compress(config) + b"IKCFG_ED")
+            report = probe.check_kernel(kernel)
+            self.assertEqual(report["compatibility"], "candidate")
+            self.assertFalse(report["guest_boot_tested"])
+            for payload in [b"broken", gzip.compress(config),
+                            gzip.compress(b"x" * (2 * 1024 * 1024 + 1)) + b"IKCFG_ED"]:
+                kernel.write_bytes(header + b"IKCFG_ST" + payload)
+                with self.assertRaises(ValueError):
+                    probe.check_kernel(kernel)
+            kernel.write_bytes(b"not an Image")
+            with self.assertRaises(ValueError):
+                probe.check_kernel(kernel)
+
+    def test_harness_delivers_cancellation_to_its_owned_process(self):
+        # Exercises local process signaling only; this is not VM acceptance.
+        with tempfile.TemporaryDirectory() as directory:
+            child = pathlib.Path(directory) / "child.py"
+            child.write_text(
+                "#!/usr/bin/env python3\nimport signal, time, sys\n"
+                "def stop(*_):\n    print('stopped', flush=True)\n    sys.exit(0)\n"
+                "signal.signal(signal.SIGTERM, stop)\nprint('ready', flush=True)\n"
+                "while True: time.sleep(0.01)\n"
+            )
+            child.chmod(0o700)
+            result = run_guest(child, pathlib.Path(directory) / "unused", 2, True)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b"ready\nstopped\n")
+
+    def test_harness_timeout_reaps_runner_without_turning_loss_into_success(self):
+        timeout = probe.subprocess.TimeoutExpired(["runner"], 16)
+        with patch.object(probe.subprocess, "Popen") as spawn:
+            process = spawn.return_value.__enter__.return_value
+            process.communicate.side_effect = [timeout, (b"", b"")]
+            with self.assertRaises(probe.subprocess.TimeoutExpired):
+                run_guest("runner", "request", 1, False)
+            process.kill.assert_called_once_with()
+            self.assertEqual(process.communicate.call_count, 2)
+
     def test_archive_preserves_input_modes_devices_and_alignment(self):
         entries = [
             ("dev", stat.S_IFDIR | 0o755, b"", 0, 0),

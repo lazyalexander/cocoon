@@ -216,8 +216,9 @@ python3 experiments/microvm/snapshot_faults.py --fixture /absolute/private/root-
 Each case uses a new VM, disk, and state file. Corrupt state and wrong machine
 identity must be rejected; a complete cold-boot sequence must fail resume
 verification even though the guest itself exits normally; a second restore must
-fail at the runner's exclusive restore claim. A failed or crashed restore consumes
-the claim, so unknown outcomes require reconciliation rather than replay.
+fail at the runner's exclusive restore claim. Once claimed, a failed or crashed
+restore consumes the claim, so unknown outcomes require reconciliation rather than
+replay. Failures before claim creation have not attempted a framework restore.
 
 All four negative cases passed on the same macOS version. A subsequent three of
 three normal cross-process samples also passed with exclusive restore claims.

@@ -60,9 +60,17 @@ def main():
             restore_request = work / "cold-boot.json"
             restore_request.write_text(json.dumps(base))
             observed = invoke(BUILD / "cocoon-vz", restore_request)
-            errors = verify_snapshot(save, observed, state.stat().st_size, disk_before, digest(disk))
-            passed = "framework restore not confirmed" in errors and "restore emitted a cold-boot marker" in errors
-            detail.update(errors=errors, cold_boot=observed)
+            errors = verify_snapshot(save, observed, state.stat().st_size, disk_before,
+                                     digest(disk), expected_token=token)
+            complete_cold_boot = (observed["exit_code"] == 0
+                                  and observed.get("termination_confirmed") is True
+                                  and observed.get("guest_ready") is True
+                                  and observed.get("guest_done") is True
+                                  and observed.get("stop_reason") == "guest_done")
+            passed = (complete_cold_boot and "framework restore not confirmed" in errors
+                      and "restore emitted a cold-boot marker" in errors
+                      and "guest RAM nonce mismatch" in errors)
+            detail.update(errors=errors, complete_cold_boot=complete_cold_boot, cold_boot=observed)
         else:
             restore_request = work / "restore.json"
             restore_request.write_text(json.dumps({**base, "snapshotMode": "restore", "restorePath": str(state)}))
@@ -73,8 +81,12 @@ def main():
                 passed = first_accepted and second["exit_code"] != 0 and second.get("status") == "snapshot_restore_claimed"
                 detail.update(first_restore_accepted=first_accepted, second_restore=second)
             else:
-                passed = (observed["exit_code"] != 0
-                          and observed.get("status") in ["snapshot_setup_failed", "snapshot_restore_failed"]
+                if args.case == "corrupt-state":
+                    expected_rejection = (observed.get("status") == "snapshot_restore_failed"
+                                          and observed.get("snapshot_restore_claimed") is True)
+                else:
+                    expected_rejection = observed.get("status") in ["snapshot_setup_failed", "snapshot_restore_failed"]
+                passed = (observed["exit_code"] != 0 and expected_rejection
                           and observed.get("snapshot_restored") is not True)
                 detail.update(restore=observed)
     detail.update(schema="cocoon-snapshot-fault-v1", case=args.case, passed=passed,

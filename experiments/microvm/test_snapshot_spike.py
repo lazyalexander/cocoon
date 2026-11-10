@@ -48,16 +48,20 @@ class SnapshotAcceptanceTests(unittest.TestCase):
         token = "a" * 32
         nonce = "0123456789abcdef0123456789abcdef"
         save = {"exit_code": 0, "snapshot_saved": True, "termination_confirmed": True,
-                "guest_ready": True,
+                "guest_ready": True, "boot_token": token,
                 "serial": f"COCOON_SNAPSHOT_READY:{token}:7:{nonce}\n"}
         restore = {"exit_code": 0, "snapshot_restored": True, "termination_confirmed": True,
-                   "guest_ready": False,
+                   "guest_ready": False, "boot_token": token,
                    "serial": f"COCOON_RESUMED:{token}:8:{nonce}\nCOCOON_DONE:{token}\n"}
         return save, restore
 
+    def verify(self, save, restore, snapshot_bytes, disk_before, disk_at_restore):
+        return probe.verify_snapshot(save, restore, snapshot_bytes, disk_before,
+                                     disk_at_restore, expected_token="a" * 32)
+
     def test_accepts_only_exact_continuous_restore(self):
         save, restore = self.valid_reports()
-        self.assertEqual(probe.verify_snapshot(save, restore, 4096, "disk-a", "disk-a"), [])
+        self.assertEqual(self.verify(save, restore, 4096, "disk-a", "disk-a"), [])
 
     def test_rejects_missing_or_unconfirmed_evidence(self):
         for field, value in [("snapshot_saved", False), ("termination_confirmed", False),
@@ -65,18 +69,18 @@ class SnapshotAcceptanceTests(unittest.TestCase):
             with self.subTest(save_field=field):
                 save, restore = self.valid_reports()
                 save[field] = value
-                self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
+                self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
         for field, value in [("termination_confirmed", False), ("exit_code", 2),
                              ("snapshot_restored", False)]:
             with self.subTest(restore_field=field):
                 save, restore = self.valid_reports()
                 restore[field] = value
-                self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
+                self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
         save, restore = self.valid_reports()
         del restore["snapshot_restored"]
-        self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
-        self.assertTrue(probe.verify_snapshot(save, restore, 0, "a", "a"))
-        self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "b"))
+        self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
+        self.assertTrue(self.verify(save, restore, 0, "a", "a"))
+        self.assertTrue(self.verify(save, restore, 4096, "a", "b"))
 
     def test_rejects_cold_boot_counter_reset_and_nonce_change(self):
         token = "a" * 32
@@ -92,16 +96,31 @@ class SnapshotAcceptanceTests(unittest.TestCase):
             with self.subTest(serial=serial):
                 save, restore = self.valid_reports()
                 restore["serial"] = serial
-                self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
+                self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
 
     def test_rejects_malformed_or_duplicate_nonce_evidence(self):
         save, restore = self.valid_reports()
         save["serial"] = save["serial"].replace("0123456789abcdef0123456789abcdef", "same")
         restore["serial"] = restore["serial"].replace("0123456789abcdef0123456789abcdef", "same")
-        self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
+        self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
         save, restore = self.valid_reports()
         restore["serial"] = restore["serial"] + restore["serial"]
-        self.assertTrue(probe.verify_snapshot(save, restore, 4096, "a", "a"))
+        self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
+        save, restore = self.valid_reports()
+        restore["serial"] += "COCOON_RESUMED:malformed\n"
+        self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
+        save, restore = self.valid_reports()
+        save["serial"] = save["serial"].replace(":7:", ":７:")
+        restore["serial"] = restore["serial"].replace(":8:", ":８:")
+        self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
+
+    def test_rejects_evidence_from_another_attempt(self):
+        save, restore = self.valid_reports()
+        save["boot_token"] = "b" * 32
+        self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
+        save, restore = self.valid_reports()
+        restore["boot_token"] = "b" * 32
+        self.assertTrue(self.verify(save, restore, 4096, "a", "a"))
 
     def test_timeout_preserves_unknown_outcome_without_restore(self):
         with tempfile.TemporaryDirectory(prefix="cocoon-snapshot-test-") as directory:

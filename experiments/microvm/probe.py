@@ -274,29 +274,33 @@ def snapshot_api():
 
 def snapshot_marker(report, name):
     prefix = name + ":"
-    matches = []
-    for line in report.get("serial", "").splitlines():
-        if line.startswith(prefix):
-            parts = line.split(":")
-            if len(parts) == 4:
-                matches.append((parts[1], parts[2], parts[3]))
-    if len(matches) != 1:
+    lines = [line for line in report.get("serial", "").splitlines() if line.startswith(prefix)]
+    if len(lines) != 1:
         return None
-    token, counter, nonce = matches[0]
+    parts = lines[0].split(":")
+    if len(parts) != 4:
+        return None
+    token, counter, nonce = parts[1], parts[2], parts[3]
     hexadecimal = set("0123456789abcdef")
-    if (len(token) != 32 or not set(token) <= hexadecimal or not counter.isdigit()
+    ascii_digits = set("0123456789")
+    if (len(token) != 32 or not set(token) <= hexadecimal
+            or not counter or not set(counter) <= ascii_digits
+            or (len(counter) > 1 and counter.startswith("0"))
+            or len(counter) > 20 or int(counter) > 2**64 - 1
             or len(nonce) != 32 or not set(nonce) <= hexadecimal):
         return None
-    return matches[0]
+    return token, counter, nonce
 
 
-def verify_snapshot(save, restore, snapshot_bytes, disk_before, disk_after):
+def verify_snapshot(save, restore, snapshot_bytes, disk_before, disk_at_restore, *, expected_token):
     errors = []
     for name, report in [("save", save), ("restore", restore)]:
         if report.get("exit_code") != 0:
             errors.append(name + " runner failed")
         if report.get("termination_confirmed") is not True:
             errors.append(name + " termination unconfirmed")
+        if report.get("boot_token") != expected_token:
+            errors.append(name + " attempt identity mismatch")
     if save.get("guest_ready") is not True:
         errors.append("save guest not ready")
     if save.get("snapshot_saved") is not True:
@@ -307,13 +311,13 @@ def verify_snapshot(save, restore, snapshot_bytes, disk_before, disk_after):
         errors.append("restore emitted a cold-boot marker")
     if snapshot_bytes <= 0:
         errors.append("snapshot missing or empty")
-    if not disk_before or disk_before != disk_after:
+    if not disk_before or disk_before != disk_at_restore:
         errors.append("disk generation mismatch")
     ready = snapshot_marker(save, "COCOON_SNAPSHOT_READY")
     resumed = snapshot_marker(restore, "COCOON_RESUMED")
     if ready is None or resumed is None:
         errors.append("snapshot continuity markers missing")
-    elif ready[0] != resumed[0]:
+    elif ready[0] != expected_token or resumed[0] != expected_token:
         errors.append("snapshot token mismatch")
     elif ready[2] != resumed[2]:
         errors.append("guest RAM nonce mismatch")
@@ -384,7 +388,7 @@ def snapshot(args):
         disk_after = digest(disk)
         errors = verify_snapshot(pair[0], pair[1] if len(pair) == 2 else {},
                                  state.stat().st_size if state.exists() else 0,
-                                 disk_before, disk_at_restore)
+                                 disk_before, disk_at_restore, expected_token=token)
         report = {"sample": sample + 1, "save": pair[0],
                   "restore": pair[1] if len(pair) == 2 else None,
                   "snapshot_bytes": state.stat().st_size if state.exists() else 0,

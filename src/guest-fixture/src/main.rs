@@ -153,12 +153,13 @@ mod guest {
             let nonce: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
             println!("COCOON_SNAPSHOT_READY:{token}:{counter}:{nonce}");
             std::io::stdout().flush()?;
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            counter += 1;
+            println!("COCOON_RESUMED:{token}:{counter}:{nonce}");
+            println!("COCOON_DONE:{token}");
+            std::io::stdout().flush()?;
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
-                counter += 1;
-                println!("COCOON_RESUMED:{token}:{counter}:{nonce}");
-                println!("COCOON_DONE:{token}");
-                std::io::stdout().flush()?;
             }
         }
         println!("COCOON_DONE:{token}");

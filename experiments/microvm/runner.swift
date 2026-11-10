@@ -34,6 +34,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
     let serial = Pipe()
     let origin = DispatchTime.now().uptimeNanoseconds
     var vm: VZVirtualMachine?
+    var deadlineTimer: DispatchSourceTimer?
     var serialSource: DispatchSourceRead?
     var signalSources: [DispatchSourceSignal] = []
     var request: Request?
@@ -53,6 +54,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
     func finish(_ status: String, _ code: Int32) {
         guard !finished else { return }
         finished = true
+        deadlineTimer?.cancel()
         serialSource?.cancel()
         signalSources.forEach { $0.cancel() }
         report["status"] = status
@@ -140,7 +142,13 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         machine.delegate = self
         installCancellation()
         report["start_requested_ms"] = elapsed()
-        queue.asyncAfter(deadline: .now() + req.seconds) { self.stop("deadline") }
+        let due = DispatchTime.now() + req.seconds
+        report["deadline_due_ms"] = Double(due.uptimeNanoseconds - origin) / 1_000_000
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
+        timer.schedule(deadline: due, leeway: .nanoseconds(0))
+        timer.setEventHandler { self.stop("deadline") }
+        deadlineTimer = timer
+        timer.resume()
         machine.start { result in
             switch result {
             case .success:

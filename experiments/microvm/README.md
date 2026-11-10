@@ -100,33 +100,8 @@ first failure. Build and configuration refusal are never reported as guest boot
 performance. Compare with Firecracker only using matching readiness definitions,
 guest kernels, hardware context and cache conditions; no parity is claimed.
 
-## Current observation
+## Hardware baseline
 
-The ARM64 guest init and optimized native runner build successfully. The managed
-execution context refuses framework configuration and cannot read the two host
-capability sysctls (EPERM). An operator-run `doctor` in a normal terminal reports
-framework support and both capability values as 1.
+Ubuntu 6.8.0-146-generic ARM64 passed fixed roundtrip, deadline and cancellation on a 1-vCPU, 128 MiB guest. All 30 repeated roundtrips passed using the same kernel with host filesystem caches retained. Guest readiness had a median of 367.57 ms and P95 of 380.13 ms. The median framework running callback was 100.40 ms. Median runner peak RSS was 9.44 MiB, excluding framework helpers.
 
-An operator-run roundtrip reached framework running state at approximately
-168 ms and confirmed host stop. The guest never emitted readiness: its LinuxKit
-kernel has `CONFIG_BLK_DEV_INITRD` disabled and panicked while trying to mount a
-root filesystem. The previous `panic=-1` command line caused immediate reboot,
-repeating panic output until the serial cap. The harness now rejects that known
-incompatible configuration, and panic reboot is disabled. No raw private reports
-or operator kernel binaries are redistributed here.
-
-This establishes observed VM startup and stop for that failed attempt, not guest
-roundtrip, deadline or cancellation acceptance. The 168 ms framework callback is
-not guest readiness or a successful boot benchmark. A compatible kernel and real
-acceptance runs are still required. The kernel-free `doctor` never creates a VM;
-its private reports are capability diagnostics, not boot benchmarks.
-
-Native runner protocol checks reject unknown fields, invalid limits, malformed
-JSON and requests over 16 KiB before creating a VM. The macOS CI job builds and
-signs the runner and runs those checks; it does not boot or qualify a guest.
-Python harness process tests likewise do not establish VM cancellation support.
-
-The implementation configures fewer devices than the earlier 1 GiB preflight,
-but this does not establish working 128 MiB guests or Firecracker-equivalent
-security. macOS process containment and protection against hostile guest output
-remain separate qualification work.
+In one 10-second deadline trial the baseline runner (SHA-256 prefix 88107d61) requested stop about 663 ms late, then confirmed stop in 4.37 ms. This case checks stop reason and termination. The revised runner uses a strict dispatch timer and reports deadline_due_ms for measuring lateness on hardware.

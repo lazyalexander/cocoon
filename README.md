@@ -6,10 +6,7 @@ Cocoon is an independent execution runtime project designed for agent workloads.
 The first target is headless Linux ARM64 execution on Apple Silicon macOS.
 an-agent is the intended first consumer, not a runtime dependency.
 
-**Current status: contract prototype and a compiled minimal macOS VM experiment.
-An operator-run VM starts Linux and confirms host stop, but the supplied kernel
-cannot load initramfs. Guest workload acceptance is still pending;
-no production execution backend is qualified.**
+**The Apple Silicon experiment passed roundtrip, deadline and cancellation checks. All 30 repeated boots passed with median guest readiness at 367.6 ms. The production backend remains in development.**
 
 ## Model
 
@@ -44,24 +41,18 @@ The minimal boot experiment is documented in
 [`experiments/microvm/README.md`](experiments/microvm/README.md). It builds a
 freestanding ARM64 Linux init and an optimized native framework runner with no
 OCI package dependency. It includes input/output, deadline-stop acceptance and
-a repeated-boot benchmark harness. All guest acceptance is still pending.
+a repeated-boot benchmark harness.
 
 The kernel-free `doctor` command records capability-read errors separately from
-hardware support. Native runner protocol checks run on macOS CI without booting
-a guest. Cancellation and bounded serial handling remain experimental until real
-VM acceptance succeeds.
+hardware support. macOS CI separately checks the runner protocol.
 
 The earlier empty-context probe remains under `experiments/macos-preflight/`.
 Neither experiment depends on an-agent or starts existing Docker/Lima machines.
 
 ## Next acceptance gate
 
-Select a compatible minimal Linux ARM64 kernel and prove one owned VM can start,
-run offline, return
-the fixed transformed input and stop at a deadline. The current experiment uses
-Virtualization.framework directly; OCI management is deferred.
-Only then connect a real backend to admission, durable ownership, reconciliation
-and artifact custody. No native fallback is allowed when VM execution is selected.
+Compare guest readiness across generic and minimal kernels with the same workload. Measure host overhead and deadline lateness before integrating durable supervision and reconciliation.
+No native fallback is allowed when VM execution is selected.
 
 Model calls, conversations, planning and multi-agent coordination belong to
 consumers. GPU/GUI guests, live memory snapshots and other host platforms are

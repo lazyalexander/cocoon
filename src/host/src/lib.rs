@@ -25,6 +25,7 @@ mod lifecycle;
 pub mod persistence;
 mod project;
 mod types;
+mod versions;
 pub use api::{HostOperation, HostRequest, HostResponse};
 use disk::{copy_new, hash, sync_directory};
 pub use error::{Error, Result};
@@ -104,6 +105,25 @@ impl Manager {
         disk: &Path,
         provenance: &str,
     ) -> Result<ImageId> {
+        self.import_record(
+            kernel,
+            initrd,
+            disk,
+            provenance,
+            true,
+            serde_json::json!({}),
+        )
+    }
+
+    fn import_record(
+        &self,
+        kernel: &Path,
+        initrd: &Path,
+        disk: &Path,
+        provenance: &str,
+        approved: bool,
+        metadata: serde_json::Value,
+    ) -> Result<ImageId> {
         if provenance.trim().is_empty() {
             return Err("provenance and license information required".into());
         }
@@ -122,7 +142,12 @@ impl Manager {
             );
             fs::set_permissions(&target, fs::Permissions::from_mode(0o400))?;
         }
-        let manifest = serde_json::json!({"id":id,"files":files,"provenance":provenance,"trusted":false,"boot_qualified":false});
+        let mut manifest = serde_json::json!({"id":id,"files":files,"provenance":provenance,"trusted":false,"approved":approved,"boot_qualified":false});
+        if let Some(fields) = metadata.as_object() {
+            for (key, value) in fields {
+                manifest[key] = value.clone();
+            }
+        }
         sync_directory(&dir)?;
         sync_directory(&self.root.join("images"))?;
         let tx = self.db.unchecked_transaction()?;

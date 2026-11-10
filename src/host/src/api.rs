@@ -1,4 +1,4 @@
-use crate::{Manager, RequestId, Result, VmId};
+use crate::{ImageId, Manager, RequestId, Result, VmId};
 use cocoon_guest_wire::{receive, send};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,6 +35,21 @@ pub enum HostOperation {
     },
     RecoverCold {
         vm: VmId,
+    },
+    SaveCandidate {
+        vm: VmId,
+    },
+    PromoteCandidate {
+        image: ImageId,
+    },
+    Rollback {
+        vm: VmId,
+        baseline: ImageId,
+    },
+    Branch {
+        source: ImageId,
+        vm: VmId,
+        owner: String,
     },
     Guest {
         request: cocoon_guest_wire::Request,
@@ -124,6 +139,20 @@ impl Manager {
                 HostOperation::RecoverCold { vm } => Ok(serde_json::to_value(
                     self.recover_cold_with_runner(vm, runner)?,
                 )?),
+                HostOperation::SaveCandidate { vm } => {
+                    Ok(serde_json::to_value(self.save_candidate(vm)?)?)
+                }
+                HostOperation::PromoteCandidate { image } => {
+                    self.promote_candidate(image)?;
+                    Ok(serde_json::Value::Null)
+                }
+                HostOperation::Rollback { vm, baseline } => {
+                    self.rollback(vm, baseline)?;
+                    Ok(serde_json::Value::Null)
+                }
+                HostOperation::Branch { source, vm, owner } => {
+                    Ok(serde_json::to_value(self.branch(source, vm, &owner)?)?)
+                }
                 HostOperation::Guest { request: mut guest } => {
                     guest.identity.caller = request.caller.clone();
                     Ok(serde_json::to_value(self.guest(guest)?)?)

@@ -94,7 +94,7 @@ impl Manager {
         Ok(())
     }
 
-    fn save_vm(&self, vm: &crate::Vm) -> Result<()> {
+    pub(crate) fn save_vm(&self, vm: &crate::Vm) -> Result<()> {
         self.db.execute(
             "UPDATE vms SET record=?1 WHERE id=?2",
             params![serde_json::to_string(vm)?, vm.id.to_string()],

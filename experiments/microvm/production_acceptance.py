@@ -61,10 +61,13 @@ def main():
             raise RuntimeError(response["result"]["Err"])
         return response["result"]["Ok"]
 
+    def identity_for(target, active):
+        return {"vm": target, "caller": "agent", "task": "binary-artifact",
+                "attempt": active["attempt"]["id"].replace("-", ""),
+                "generation": active["generation"], "request": 0}
+
     def identity():
-        return {"vm": vm, "caller": "agent", "task": "binary-artifact",
-                "attempt": authority["attempt"]["id"].replace("-", ""),
-                "generation": authority["generation"], "request": 0}
+        return identity_for(vm, authority)
 
     try:
         authority = api({"operation": "start", "vm": vm})
@@ -114,10 +117,23 @@ def main():
         api({"operation": "stop", "vm": vm})
         stopped = api({"operation": "show", "vm": vm})
         assert stopped["state"] == "stopped" and stopped["active_lease"] is None
+        candidate = api({"operation": "save_candidate", "vm": vm})
+        api({"operation": "promote_candidate", "image": candidate})
+        branch = str(uuid.uuid4())
+        api({"operation": "branch", "source": candidate, "vm": branch, "owner": "production-acceptance"})
+        branch_authority = api({"operation": "start", "vm": branch})
+        branch_result = api({"operation": "guest", "request": {
+            "identity": identity_for(branch, branch_authority),
+            "operation": {"kind": "exec", "argv": ["/bin/sh", "-c",
+                "test -s data.bin && printf BRANCH_PASS"], "cwd": "/workspace"}}})
+        assert branch_result["result"]["Ok"]["stdout"] == "BRANCH_PASS"
+        api({"operation": "stop", "vm": branch})
+        api({"operation": "rollback", "vm": vm, "baseline": image})
         summary = {"schema": "cocoon-production-acceptance-v1", "passed": True,
                    "binary_bytes": len(expected), "artifact_sha256": artifact["sha256"],
                    "generation": authority["generation"], "resumed": True,
-                   "cold_recovery": args.corrupt_before_resume, "state": stopped["state"]}
+                   "cold_recovery": args.corrupt_before_resume, "branch": True,
+                   "rollback": True, "state": stopped["state"]}
     except BaseException as error:
         try:
             if authority is not None:

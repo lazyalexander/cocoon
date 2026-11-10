@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use uuid::Uuid;
 macro_rules! identity {
     ($name:ident) => {
@@ -87,6 +88,14 @@ impl ExecutionAuthority {
         Ok(authority)
     }
 
+    pub fn issue_recovery(vm: &mut Vm) -> Result<Self, &'static str> {
+        if vm.state != VmState::RecoveryRequired {
+            return Err("cold recovery is not approved for this state");
+        }
+        vm.state = VmState::Stopped;
+        Self::issue(vm)
+    }
+
     pub fn authorize(&self, vm: &Vm) -> Result<(), &'static str> {
         if self.attempt.vm != vm.id
             || vm.active_attempt != Some(self.attempt.id)
@@ -124,6 +133,8 @@ pub struct Vm {
     pub active_attempt: Option<AttemptId>,
     #[serde(default)]
     pub active_lease: Option<LeaseId>,
+    #[serde(default)]
+    pub suspend_state: Option<PathBuf>,
     #[serde(default)]
     pub disk_copy: Option<DiskCopy>,
 }

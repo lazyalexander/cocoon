@@ -116,6 +116,11 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             signalSources.append(source)
             source.resume()
         }
+        signal(SIGUSR1, SIG_IGN)
+        let snapshot = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: queue)
+        snapshot.setEventHandler { self.requestSnapshot() }
+        signalSources.append(snapshot)
+        snapshot.resume()
     }
 
     func installSerialReader() -> Bool {
@@ -271,6 +276,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
                     switch result {
                     case .success:
                         self.report["vm_running_ms"] = self.elapsed()
+                        self.emitEvent("vm_resumed")
                         if self.stopping { self.performStop() }
                     case .failure(let error):
                         self.report["snapshot_error"] = error.localizedDescription
@@ -311,10 +317,8 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             report["guest_ready"] = true
             report["guest_ready_ms"] = elapsed()
         }
-        if req.snapshotMode == "save", report["snapshot_save_requested"] as? Bool != true,
-           text.contains("COCOON_SNAPSHOT_READY:" + req.token + ":") {
-            report["snapshot_save_requested"] = true
-            saveSnapshot()
+        if req.snapshotMode == "save" && text.contains("COCOON_SNAPSHOT_READY:" + req.token + ":") {
+            requestSnapshot()
         }
         if (req.project != nil || req.diskMode == "agent") && !projectStarted && text.contains("COCOON_HELPER_READY\n") {
             projectStarted = true
@@ -329,6 +333,12 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             report["guest_done_ms"] = elapsed()
             stop("guest_done")
         }
+    }
+
+    func requestSnapshot() {
+        guard !stopping && !finished && report["snapshot_save_requested"] as? Bool != true else { return }
+        report["snapshot_save_requested"] = true
+        saveSnapshot()
     }
 
     func saveSnapshot() {
@@ -356,11 +366,16 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
                         return
                     }
                     do {
+                        if let restore = req.restorePath {
+                            let identity = try Data(contentsOf: URL(fileURLWithPath: restore + ".machine-id"))
+                            try identity.write(to: URL(fileURLWithPath: path + ".machine-id"), options: [.withoutOverwriting])
+                        }
                         let output = try FileHandle(forWritingTo: url)
                         try output.synchronize()
                         try output.close()
                         self.report["snapshot_saved"] = true
                         self.report["snapshot_save_ms"] = self.elapsed()
+                        self.emitEvent("snapshot_saved")
                         self.stop("snapshot_saved")
                     } catch {
                         self.report["snapshot_error"] = error.localizedDescription
@@ -493,9 +508,17 @@ do {
               path != req.kernel, path != req.initrd, path != req.rootDisk else {
             throw NSError(domain: "invalid snapshot request", code: 1)
         }
-        guard (mode == "save") == (req.snapshotPath != nil),
-              (mode == "restore") == (req.restorePath != nil) else {
+        guard (mode == "restore") == (req.restorePath != nil) else {
             throw NSError(domain: "ambiguous snapshot request", code: 1)
+        }
+        if mode == "save" && req.snapshotPath == nil || mode == "restore" && req.restorePath == nil {
+            throw NSError(domain: "missing snapshot path", code: 1)
+        }
+        if let next = req.snapshotPath {
+            guard next.hasPrefix("/"), next.count <= 4096, req.restorePath == nil || next != path,
+                  next != req.kernel, next != req.initrd, next != req.rootDisk else {
+                throw NSError(domain: "invalid next snapshot path", code: 1)
+            }
         }
     } else if req.snapshotPath != nil || req.restorePath != nil {
         throw NSError(domain: "snapshot path requires a mode", code: 1)

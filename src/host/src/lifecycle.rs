@@ -28,6 +28,8 @@ pub struct ExecutionRecord {
     pub events: PathBuf,
     #[serde(default)]
     pub control: Option<PathBuf>,
+    #[serde(default)]
+    pub restore_from: Option<PathBuf>,
     pub status: String,
 }
 
@@ -101,6 +103,16 @@ impl Manager {
     }
 
     pub fn start_with_runner(&self, id: VmId, runner: &Path) -> Result<ExecutionAuthority> {
+        self.launch(id, runner, None, false)
+    }
+
+    fn launch(
+        &self,
+        id: VmId,
+        runner: &Path,
+        restore: Option<PathBuf>,
+        allow_recovery: bool,
+    ) -> Result<ExecutionAuthority> {
         if !runner.is_absolute() || !fs::symlink_metadata(runner)?.is_file() {
             return Err("runner must be an absolute regular file".into());
         }
@@ -111,9 +123,13 @@ impl Manager {
         }
         let mut vm = self.get(id)?;
         self.verify_image(vm.image)?;
-        let authority = ExecutionAuthority::issue(&mut vm)?;
+        let authority = if allow_recovery {
+            ExecutionAuthority::issue_recovery(&mut vm)?
+        } else {
+            ExecutionAuthority::issue(&mut vm)?
+        };
         vm.state = VmState::Unknown;
-        self.append_journal(id, "start_intent", serde_json::json!({"attempt": authority.attempt.id, "generation": authority.generation}))?;
+        self.append_journal(id, if allow_recovery { "cold_recovery_intent" } else { "start_intent" }, serde_json::json!({"attempt": authority.attempt.id, "generation": authority.generation}))?;
         self.save_vm(&vm)?;
         let run = self
             .root
@@ -127,15 +143,18 @@ impl Manager {
         let control = PathBuf::from(format!("/tmp/cocoon-{token}.sock"));
         let request = run.join("request.json");
         let disk = self.root.join("vms").join(id.to_string()).join("root.raw");
-        fs::write(
-            &request,
-            serde_json::to_vec(&serde_json::json!({
-                "kernel": image.join("kernel"), "initrd": image.join("initrd"), "token": token,
-                "memoryMiB": vm.memory_mib, "seconds": 3600, "rootDisk": disk,
-                "diskMode": "agent", "payload": token, "eventLog": events,
-                "controlSocket": control,
-            }))?,
-        )?;
+        let state = run.join("state.vz");
+        let mut definition = serde_json::json!({
+            "kernel": image.join("kernel"), "initrd": image.join("initrd"), "token": token,
+            "memoryMiB": vm.memory_mib, "seconds": 3600, "rootDisk": disk,
+            "diskMode": "agent", "payload": token, "eventLog": events,
+            "controlSocket": control, "snapshotMode": "save", "snapshotPath": state,
+        });
+        if let Some(source) = restore.as_ref() {
+            definition["snapshotMode"] = "restore".into();
+            definition["restorePath"] = serde_json::to_value(source)?;
+        }
+        fs::write(&request, serde_json::to_vec(&definition)?)?;
         fs::File::open(&request)?.sync_all()?;
         sync_directory(&run)?;
         let mut execution = ExecutionRecord {
@@ -148,7 +167,12 @@ impl Manager {
             request: request.clone(),
             events: events.clone(),
             control: Some(control),
-            status: "starting".into(),
+            restore_from: restore.clone(),
+            status: if restore.is_some() {
+                "resuming".into()
+            } else {
+                "starting".into()
+            },
         };
         self.db.execute(
             "INSERT INTO executions VALUES (?1,?2,?3)",
@@ -169,11 +193,42 @@ impl Manager {
         execution.pid = Some(child.id());
         self.save_execution(&execution)?;
         let deadline = Instant::now() + Duration::from_secs(20);
+        let ready_event = if restore.is_some() {
+            "vm_resumed"
+        } else {
+            "guest_ready"
+        };
         loop {
-            if event(&events, "guest_ready", &token)? {
+            if event(&events, ready_event, &token)? {
                 break;
             }
             if let Some(status) = child.try_wait()? {
+                if restore.is_some() {
+                    let report = fs::read(run.join("stdout.json"))
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                    let rejected = report.as_ref().is_some_and(|report| {
+                        [
+                            "snapshot_restore_failed",
+                            "snapshot_setup_failed",
+                            "snapshot_restore_claimed",
+                        ]
+                        .contains(&report["status"].as_str().unwrap_or(""))
+                    });
+                    vm.state = if rejected {
+                        VmState::RecoveryRequired
+                    } else {
+                        VmState::Unknown
+                    };
+                    vm.active_lease = None;
+                    execution.status = if rejected {
+                        "recovery_required".into()
+                    } else {
+                        "unknown".into()
+                    };
+                    self.save_vm(&vm)?;
+                    self.save_execution(&execution)?;
+                }
                 return Err(format!("runner exited before guest readiness: {status}").into());
             }
             if Instant::now() >= deadline {
@@ -190,6 +245,9 @@ impl Manager {
             .map_err(|_| crate::Error::from("child registry poisoned"))?
             .insert(authority.attempt.id, child);
         vm.state = VmState::Running;
+        if restore.is_some() {
+            vm.suspend_state = None;
+        }
         execution.status = "running".into();
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
@@ -204,12 +262,151 @@ impl Manager {
             ],
         )?;
         tx.commit()?;
+        if restore.is_some() {
+            let challenge = cocoon_guest_wire::Request {
+                identity: cocoon_guest_wire::Identity {
+                    vm: id.to_string(),
+                    caller: "host-resume".into(),
+                    task: "resume-challenge".into(),
+                    attempt: token.clone(),
+                    generation: authority.generation,
+                    request: 0,
+                },
+                operation: cocoon_guest_wire::Operation::Exec {
+                    argv: vec!["/bin/busybox".into(), "true".into()],
+                    cwd: "/workspace".into(),
+                },
+            };
+            let valid = self
+                .guest(challenge)
+                .ok()
+                .and_then(|response| response.result.ok())
+                .is_some_and(|output| {
+                    matches!(
+                        output,
+                        cocoon_guest_wire::Output::Exited { code: Some(0), .. }
+                    )
+                });
+            if !valid {
+                vm.state = VmState::Unknown;
+                execution.status = "unknown".into();
+                self.save_vm(&vm)?;
+                self.save_execution(&execution)?;
+                return Err("restored guest failed the host challenge".into());
+            }
+        }
         self.append_journal(
             id,
-            "start_complete",
+            if restore.is_some() {
+                "resume_complete"
+            } else {
+                "start_complete"
+            },
             serde_json::json!({"attempt": execution.attempt, "pid": execution.pid}),
         )?;
         Ok(authority)
+    }
+
+    pub fn suspend(&self, id: VmId) -> Result<()> {
+        let mut vm = self.get(id)?;
+        if vm.state != VmState::Running {
+            return Err("VM is not running".into());
+        }
+        let attempt = vm.active_attempt.ok_or("missing active attempt")?;
+        let mut execution = self.execution(attempt)?;
+        let pid = execution.pid.ok_or("missing runner pid")?;
+        let state = execution
+            .request
+            .parent()
+            .ok_or("invalid execution directory")?
+            .join("state.vz");
+        vm.state = VmState::Suspending;
+        execution.status = "suspending".into();
+        self.save_vm(&vm)?;
+        self.save_execution(&execution)?;
+        self.append_journal(
+            id,
+            "suspend_intent",
+            serde_json::json!({"attempt": attempt}),
+        )?;
+        let status = Command::new("/bin/kill")
+            .arg("-USR1")
+            .arg(pid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !status.success() {
+            vm.state = VmState::Unknown;
+            execution.status = "unknown".into();
+            self.save_vm(&vm)?;
+            self.save_execution(&execution)?;
+            return Err("snapshot signal delivery failed".into());
+        }
+        let token = attempt.raw().simple().to_string();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let saved = event(&execution.events, "snapshot_saved", &token)?;
+            let stopped =
+                event(&execution.events, "stopped", &token)? && runner_exited(self, attempt, pid)?;
+            if saved && stopped {
+                vm.state = VmState::Suspended;
+                vm.active_lease = None;
+                vm.suspend_state = Some(state);
+                execution.status = "suspended".into();
+                self.save_vm(&vm)?;
+                self.save_execution(&execution)?;
+                self.append_journal(
+                    id,
+                    "suspend_complete",
+                    serde_json::json!({"attempt": attempt}),
+                )?;
+                return Ok(());
+            }
+            if stopped {
+                vm.state = VmState::RecoveryRequired;
+                vm.active_lease = None;
+                execution.status = "recovery_required".into();
+                self.save_vm(&vm)?;
+                self.save_execution(&execution)?;
+                self.append_journal(
+                    id,
+                    "suspend_failed",
+                    serde_json::json!({"attempt": attempt}),
+                )?;
+                return Err(
+                    "snapshot failed after confirmed stop; cold recovery requires approval".into(),
+                );
+            }
+            if Instant::now() >= deadline {
+                vm.state = VmState::Unknown;
+                execution.status = "unknown".into();
+                self.save_vm(&vm)?;
+                self.save_execution(&execution)?;
+                return Err("snapshot outcome is unknown".into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    pub fn resume_with_runner(&self, id: VmId, runner: &Path) -> Result<ExecutionAuthority> {
+        let vm = self.get(id)?;
+        if vm.state != VmState::Suspended {
+            return Err("VM is not suspended".into());
+        }
+        let source = vm
+            .suspend_state
+            .clone()
+            .ok_or("missing suspended checkpoint")?;
+        self.launch(id, runner, Some(source), false)
+    }
+
+    pub fn recover_cold_with_runner(&self, id: VmId, runner: &Path) -> Result<ExecutionAuthority> {
+        if self.get(id)?.state != VmState::RecoveryRequired {
+            return Err("cold recovery requires an explicit recovery-required state".into());
+        }
+        self.append_journal(id, "cold_recovery_approved", serde_json::json!({}))?;
+        self.launch(id, runner, None, true)
     }
 
     pub fn stop(&self, id: VmId) -> Result<()> {

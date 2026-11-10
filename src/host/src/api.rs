@@ -27,6 +27,15 @@ pub enum HostOperation {
     Reconcile {
         vm: VmId,
     },
+    Suspend {
+        vm: VmId,
+    },
+    Resume {
+        vm: VmId,
+    },
+    RecoverCold {
+        vm: VmId,
+    },
     Guest {
         request: cocoon_guest_wire::Request,
     },
@@ -105,6 +114,16 @@ impl Manager {
                 }
                 HostOperation::Show { vm } => Ok(serde_json::to_value(self.get(vm)?)?),
                 HostOperation::Reconcile { vm } => Ok(serde_json::to_value(self.reconcile(vm)?)?),
+                HostOperation::Suspend { vm } => {
+                    self.suspend(vm)?;
+                    Ok(serde_json::Value::Null)
+                }
+                HostOperation::Resume { vm } => {
+                    Ok(serde_json::to_value(self.resume_with_runner(vm, runner)?)?)
+                }
+                HostOperation::RecoverCold { vm } => Ok(serde_json::to_value(
+                    self.recover_cold_with_runner(vm, runner)?,
+                )?),
                 HostOperation::Guest { request: mut guest } => {
                     guest.identity.caller = request.caller.clone();
                     Ok(serde_json::to_value(self.guest(guest)?)?)

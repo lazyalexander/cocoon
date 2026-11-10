@@ -15,6 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", required=True, type=pathlib.Path)
     parser.add_argument("--kernel", required=True, type=pathlib.Path)
+    parser.add_argument("--corrupt-before-resume", action="store_true")
     args = parser.parse_args()
     fixture = args.fixture.resolve(strict=True)
     kernel = args.kernel.resolve(strict=True)
@@ -77,6 +78,33 @@ def main():
             "kind": "exec", "argv": ["/bin/sh", "-c", "test -s data.bin && printf BINARY_PASS"],
             "cwd": "/workspace"}}})
         assert executed["result"]["Ok"]["stdout"] == "BINARY_PASS"
+        first_generation = authority["generation"]
+        first_attempt = authority["attempt"]["id"]
+        api({"operation": "suspend", "vm": vm})
+        suspended = api({"operation": "show", "vm": vm})
+        assert suspended["state"] == "suspended" and suspended["active_lease"] is None
+        if args.corrupt_before_resume:
+            state_path = pathlib.Path(suspended["suspend_state"])
+            content = bytearray(state_path.read_bytes())
+            content[0] ^= 1
+            state_path.write_bytes(content)
+            try:
+                api({"operation": "resume", "vm": vm})
+                raise AssertionError("corrupt snapshot unexpectedly resumed")
+            except RuntimeError:
+                pass
+            recovery = api({"operation": "show", "vm": vm})
+            assert recovery["state"] == "recovery_required" and recovery["active_lease"] is None
+            authority = api({"operation": "recover_cold", "vm": vm})
+            assert authority["generation"] == first_generation + 2
+        else:
+            authority = api({"operation": "resume", "vm": vm})
+            assert authority["generation"] == first_generation + 1
+        assert authority["attempt"]["id"] != first_attempt
+        resumed = api({"operation": "guest", "request": {"identity": identity(), "operation": {
+            "kind": "exec", "argv": ["/bin/sh", "-c", "test -s data.bin && printf RESUME_PASS"],
+            "cwd": "/workspace"}}})
+        assert resumed["result"]["Ok"]["stdout"] == "RESUME_PASS"
         artifact = api({"operation": "export", "request": {"identity": identity(), "operation": {
             "kind": "read", "path": "/workspace/data.bin"}},
             "guest_path": "/workspace/data.bin", "name": "artifact.bin"})
@@ -88,7 +116,8 @@ def main():
         assert stopped["state"] == "stopped" and stopped["active_lease"] is None
         summary = {"schema": "cocoon-production-acceptance-v1", "passed": True,
                    "binary_bytes": len(expected), "artifact_sha256": artifact["sha256"],
-                   "generation": authority["generation"], "state": stopped["state"]}
+                   "generation": authority["generation"], "resumed": True,
+                   "cold_recovery": args.corrupt_before_resume, "state": stopped["state"]}
     except BaseException as error:
         try:
             if authority is not None:

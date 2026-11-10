@@ -205,6 +205,7 @@ impl Manager {
             generation: 0,
             active_attempt: None,
             active_lease: None,
+            suspend_state: None,
             disk_copy: Some(disk_copy),
         };
         sync_directory(&dir)?;

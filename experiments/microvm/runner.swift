@@ -9,6 +9,9 @@ struct Request: Decodable {
     let token: String
     let memoryMiB: UInt64
     let seconds: Double
+    let rootDisk: String?
+    let diskMode: String?
+    let payload: String?
 }
 
 func hostDiagnostics() -> [String: Any] {
@@ -58,6 +61,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         report["status"] = status
         report["runner_elapsed_ms"] = elapsed()
         report["serial_base64"] = bytes.base64EncodedString()
+        report["guest_serial"] = String(decoding: bytes, as: UTF8.self)
         var usage = rusage()
         if getrusage(RUSAGE_SELF, &usage) == 0 {
             report["runner_peak_rss_bytes"] = usage.ru_maxrss
@@ -111,6 +115,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
 
     func begin(_ req: Request) {
         request = req
+        report["boot_token"] = req.token
         report["memory_mib"] = req.memoryMiB
         report["vcpus"] = 1
         report["framework_supported"] = VZVirtualMachine.isSupported
@@ -126,7 +131,19 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         port.attachment = VZFileHandleSerialPortAttachment(
             fileHandleForReading: nil, fileHandleForWriting: serial.fileHandleForWriting)
         config.serialPorts = [port]
-        // No disk, network, graphics, shared directory, vsock or balloon device.
+        if let disk = req.rootDisk, let mode = req.diskMode, let payload = req.payload {
+            do {
+                let attachment = try VZDiskImageStorageDeviceAttachment(url: URL(fileURLWithPath: disk), readOnly: false)
+                config.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: attachment)]
+                report["storage_devices"] = 1
+                loader.commandLine += " cocoon.token=\(req.token) cocoon.mode=\(mode) cocoon.payload=\(payload)"
+            } catch {
+                report["error"] = error.localizedDescription
+                finish("setup_failed", 2)
+                return
+            }
+        }
+        // Optional fixed-fixture disk; no network, graphics, shared directories or vsock.
         do { try config.validate() } catch {
             let e = error as NSError
             report["error"] = ["domain": e.domain, "code": e.code, "message": e.localizedDescription]
@@ -230,13 +247,23 @@ do {
     guard data.count <= 16384 else { throw NSError(domain: "request too large", code: 1) }
     let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     let allowed = Set(["kernel", "initrd", "token", "memoryMiB", "seconds"])
-    guard let fields = fields, Set(fields.keys) == allowed else {
+    let diskFields = Set(["rootDisk", "diskMode", "payload"])
+    guard let fields = fields, Set(fields.keys) == allowed || Set(fields.keys) == allowed.union(diskFields) else {
         throw NSError(domain: "unknown or missing request fields", code: 1)
     }
     let req = try JSONDecoder().decode(Request.self, from: data)
     guard req.token.count == 32, req.token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
           (128...4096).contains(req.memoryMiB), (1...60).contains(req.seconds) else {
         throw NSError(domain: "invalid experimental request", code: 1)
+    }
+    if let disk = req.rootDisk {
+        guard disk.hasPrefix("/"), let mode = req.diskMode, ["write", "read"].contains(mode),
+              let payload = req.payload, payload.count == 32,
+              payload.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw NSError(domain: "invalid disk fixture request", code: 1)
+        }
+    } else if req.diskMode != nil || req.payload != nil || fields.keys.contains("rootDisk") {
+        throw NSError(domain: "incomplete disk fixture request", code: 1)
     }
     runner.queue.async { runner.begin(req) }
     dispatchMain()

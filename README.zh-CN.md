@@ -51,8 +51,9 @@ cargo run --offline -- plan examples/task.json
 
 ## 下一阶段验收
 
-加入可写 Linux 根文件系统，证明修改在确认停止和重启后保留。
-当前通过验收的是无磁盘固定工作负载，直接使用 Virtualization.framework；OCI 管理延后。
+固定 Rust ext4 根磁盘 fixture 已通过十轮持久化。下一步加入 Debian 用户空间和
+生产 guest helper／控制链路；固定工作负载验收不证明这些能力可用。
+继续使用 Virtualization.framework；OCI 管理延后。
 通过这些验收后，再接入真实准入、持久监督、故障对账与产物保管机制。
 选择 VM 执行后，不允许自动退回宿主原生执行。
 

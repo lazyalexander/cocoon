@@ -23,7 +23,9 @@ VMM internals or equivalent containment. The native runner remains experimental.
 | --- | --- | --- |
 | `cocoon` | CLI parsing and host-facing output | runtime, host |
 | `cocoon-runtime` | Platform-neutral task validation and attempt state | none |
-| `cocoon-host` | SQLite records, image custody and VM registration | none |
+| `cocoon-host` | SQLite, image custody, VM registration and experimental supervision | platform |
+| `cocoon-platform` | Narrow native filesystem FFI and sparse copying | none |
+| `cocoon-guest-fixture` | Fixed Linux ARM64 root-disk acceptance | none |
 
 SQLite and filesystem custody do not belong in the contract crate. Guest helpers
 must never depend on the host administration crate. Every workspace member is a
@@ -40,12 +42,11 @@ platform adapter that remains necessary. Python is for development, image
 acquisition and acceptance harnesses; C currently supplies the tiny boot fixture.
 Neither Python nor Swift should acquire production authorization or registry logic.
 
-The next backend increment should separate Rust process supervision and typed
-host observations from Apple framework calls. Do not add an empty VMM crate or
-an untested Rust Objective-C binding solely for directory symmetry. Determine
-adapter mechanics with a compiled, real-VM-tested spike first. Existing Swift
-boot evidence does not qualify a replacement Rust runner. A separate guest-helper
-crate is introduced only when implementing the vsock command/file protocol.
+The persistent-root experiment now separates Rust process supervision from
+Apple framework calls. Native filesystem FFI and Linux fixture syscalls are
+isolated in their own crates; control-plane crates continue forbidding unsafe.
+The fixed fixture is not the future general vsock guest helper. See the
+[persistence experiment](../experiments/microvm/PERSISTENCE.md) for limitations.
 
 Host policy remains outside the per-VM execution path. Guest transport stays
 untrusted even with a matching VM ID. Lost transport or runner death is not

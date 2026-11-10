@@ -1,38 +1,26 @@
 //! Trusted local host administration. No guest-facing lifecycle authority.
+//!
+//! Identities cannot be accidentally substituted across resource kinds:
+//! ```compile_fail
+//! use cocoon_host::{ImageId, VmId};
+//! let image = ImageId::from(uuid::Uuid::new_v4());
+//! let vm: VmId = image;
+//! ```
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{Read, Write},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum FinishPolicy {
-    Retain,
-    Rollback,
-    Branch,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Vm {
-    pub id: Uuid,
-    pub owner: String,
-    pub image: Uuid,
-    pub policy: FinishPolicy,
-    pub state: String,
-    pub network: bool,
-    pub vcpus: u8,
-    pub memory_mib: u32,
-}
-
+mod disk;
+mod error;
+pub mod persistence;
+mod types;
+use disk::{copy_new, hash, sync_directory};
+pub use error::{Error, Result};
+pub use types::*;
 /// Only trusted host code may construct this interface. Socket ACLs are not
 /// isolation from arbitrary code running under the same macOS user.
 pub struct Manager {
@@ -65,17 +53,23 @@ impl Manager {
             }
         }
         let db = Connection::open(root.join("state.sqlite3"))?;
+        let version: u32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version > 1 {
+            return Err("unsupported database schema version".into());
+        }
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS images(id TEXT PRIMARY KEY, manifest TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS vms(id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL);")?;
+            CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS boots(id TEXT PRIMARY KEY, vm TEXT NOT NULL, status TEXT NOT NULL, report TEXT);
+            PRAGMA user_version=1; COMMIT;")?;
         Ok(Self {
             root: root.to_owned(),
             db,
         })
     }
-    fn begin(&self, id: Uuid, kind: &str, target: Uuid) -> Result<()> {
+    fn begin(&self, id: OperationId, kind: &str, target: impl std::fmt::Display) -> Result<()> {
         self.db.execute(
             "INSERT INTO operations VALUES (?1,?2,?3,'pending')",
             params![id.to_string(), kind, target.to_string()],
@@ -95,20 +89,23 @@ impl Manager {
         initrd: &Path,
         disk: &Path,
         provenance: &str,
-    ) -> Result<Uuid> {
+    ) -> Result<ImageId> {
         if provenance.trim().is_empty() {
             return Err("provenance and license information required".into());
         }
-        let id = Uuid::new_v4();
-        let operation = Uuid::new_v4();
+        let id = ImageId::from(Uuid::new_v4());
+        let operation = OperationId::from(Uuid::new_v4());
         self.begin(operation, "import_image", id)?;
         let dir = self.root.join("images").join(id.to_string());
         fs::create_dir(&dir)?;
         let mut files = serde_json::Map::new();
         for (name, source) in [("kernel", kernel), ("initrd", initrd), ("root.raw", disk)] {
             let target = dir.join(name);
-            copy_new(source, &target)?;
-            files.insert(name.into(), serde_json::json!({"sha256": hash(&target)?}));
+            let copy = copy_new(source, &target)?;
+            files.insert(
+                name.into(),
+                serde_json::json!({"sha256": hash(&target)?, "copy":copy}),
+            );
             fs::set_permissions(&target, fs::Permissions::from_mode(0o400))?;
         }
         let manifest = serde_json::json!({"id":id,"files":files,"provenance":provenance,"trusted":false,"boot_qualified":false});
@@ -126,7 +123,7 @@ impl Manager {
         tx.commit()?;
         Ok(id)
     }
-    pub fn image(&self, id: Uuid) -> Result<serde_json::Value> {
+    pub fn image(&self, id: ImageId) -> Result<serde_json::Value> {
         let record: String = self.db.query_row(
             "SELECT manifest FROM images WHERE id=?1",
             [id.to_string()],
@@ -134,7 +131,7 @@ impl Manager {
         )?;
         Ok(serde_json::from_str(&record)?)
     }
-    fn verify_image(&self, id: Uuid) -> Result<()> {
+    fn verify_image(&self, id: ImageId) -> Result<()> {
         let manifest = self.image(id)?;
         for name in ["kernel", "initrd", "root.raw"] {
             let actual = hash(&self.root.join("images").join(id.to_string()).join(name))?;
@@ -144,7 +141,13 @@ impl Manager {
         }
         Ok(())
     }
-    pub fn create(&self, id: Uuid, image: Uuid, owner: &str, policy: FinishPolicy) -> Result<Vm> {
+    pub fn create(
+        &self,
+        id: VmId,
+        image: ImageId,
+        owner: &str,
+        policy: FinishPolicy,
+    ) -> Result<Vm> {
         if owner.is_empty() || owner.len() > 256 {
             return Err("invalid owner".into());
         }
@@ -165,10 +168,10 @@ impl Manager {
         }
         self.verify_image(image)?;
         // A pending create is never automatically replayed after an unknown result.
-        self.begin(id, "create_vm", id)?;
+        self.begin(OperationId::from(id.raw()), "create_vm", id)?;
         let dir = self.root.join("vms").join(id.to_string());
         fs::create_dir(&dir)?;
-        copy_new(
+        let disk_copy = copy_new(
             &self
                 .root
                 .join("images")
@@ -181,10 +184,11 @@ impl Manager {
             owner: owner.into(),
             image,
             policy,
-            state: "prepared".into(),
+            state: VmState::Prepared,
             network: false,
             vcpus: 1,
             memory_mib: 512,
+            disk_copy: Some(disk_copy),
         };
         sync_directory(&dir)?;
         sync_directory(&self.root.join("vms"))?;
@@ -200,7 +204,7 @@ impl Manager {
         tx.commit()?;
         Ok(vm)
     }
-    pub fn get(&self, id: Uuid) -> Result<Vm> {
+    pub fn get(&self, id: VmId) -> Result<Vm> {
         let record: String = self.db.query_row(
             "SELECT record FROM vms WHERE id=?1",
             [id.to_string()],
@@ -213,44 +217,8 @@ impl Manager {
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }
-    pub fn start(&self, id: Uuid) -> Result<()> {
+    pub fn start(&self, id: VmId) -> Result<()> {
         self.get(id)?;
         Err("execution unavailable: persistent-disk VM backend is not qualified; no native fallback".into())
     }
-}
-fn copy_new(source: &Path, target: &Path) -> Result<()> {
-    let mut input = fs::File::open(source)?;
-    if !input.metadata()?.is_file() {
-        return Err("image input must be a regular file".into());
-    }
-    let mut output = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)?;
-    std::io::copy(&mut input, &mut output)?;
-    output.flush()?;
-    output.sync_all()?;
-    Ok(())
-}
-fn hash(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0; 65536];
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        digest.update(&buffer[..n]);
-    }
-    Ok(digest
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
-}
-
-fn sync_directory(path: &Path) -> Result<()> {
-    fs::File::open(path)?.sync_all()?;
-    Ok(())
 }

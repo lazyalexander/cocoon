@@ -136,3 +136,5 @@ SHA256SUMS 对照，但未验证独立签名。内核保留 Linux/Debian 许可�
 负载的无磁盘测量，不是冷缓存、完整 Linux 开发环境、总内存核算或 Firecracker
 对比。原始报告保留在忽略的私有 `runs/`。可写根磁盘持久化、guest helper 和生产
 所有权恢复仍未实现或验收。
+
+新增有界磁盘路径见 [Rust 持久根磁盘实验](PERSISTENCE.zh-CN.md)。

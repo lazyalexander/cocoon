@@ -45,14 +45,19 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let manager = Manager::open(Path::new(&args[0]))?;
     let result = match args[1..].iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["image", "import", kernel, initrd, disk, provenance] => serde_json::json!({"image": manager.import_image(Path::new(kernel), Path::new(initrd), Path::new(disk), provenance)?}),
-        ["image", "show", id] => manager.image(Uuid::parse_str(id)?)?,
+        ["image", "show", id] => manager.image(Uuid::parse_str(id)?.into())?,
         ["vm", "create", id, image, owner, policy] => {
             let policy = match *policy { "retain" => FinishPolicy::Retain, "rollback" => FinishPolicy::Rollback, "branch" => FinishPolicy::Branch, _ => return Err("invalid finish policy".into()) };
-            serde_json::to_value(manager.create(Uuid::parse_str(id)?, Uuid::parse_str(image)?, owner, policy)?)?
+            serde_json::to_value(manager.create(Uuid::parse_str(id)?.into(), Uuid::parse_str(image)?.into(), owner, policy)?)?
         }
         ["vm", "list"] => serde_json::to_value(manager.list()?)?,
-        ["vm", "show", id] => serde_json::to_value(manager.get(Uuid::parse_str(id)?)?)?,
-        ["vm", "start", id] => { manager.start(Uuid::parse_str(id)?)?; serde_json::Value::Null }
+        ["vm", "show", id] => serde_json::to_value(manager.get(Uuid::parse_str(id)?.into())?)?,
+        ["experiment", "persistence", id, runner, mode, payload] => {
+            let result = manager.persistence_boot(Uuid::parse_str(id)?.into(), Path::new(runner), mode, payload)?;
+            if result["passed"] != true { println!("{}", serde_json::to_string_pretty(&result)?); return Err("persistence acceptance failed; inspect original boot before further action".into()); }
+            result
+        }
+        ["vm", "start", id] => { manager.start(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
         ["operations"] => serde_json::to_value(manager.operations()?)?,
         _ => return Err("unknown host command; supported: image import/show, vm create/list/show/start, operations".into()),
     };

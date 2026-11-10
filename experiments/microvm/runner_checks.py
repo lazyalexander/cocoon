@@ -31,6 +31,17 @@ class RunnerProtocolTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.request(json.dumps({**base, **change}).encode())
 
+    def test_disk_fields_are_complete_and_bounded(self):
+        base = {"kernel":"/unused-kernel", "initrd":"/unused-initrd", "token":"a"*32,
+                "memoryMiB":512, "seconds":1}
+        for change in [{"rootDisk":"/unused"},
+                       {"rootDisk":None,"diskMode":"write","payload":"a"*32},
+                       {"rootDisk":"relative","diskMode":"read","payload":"a"*32},
+                       {"rootDisk":"/unused","diskMode":"shell","payload":"a"*32},
+                       {"rootDisk":"/unused","diskMode":"write","payload":"bad"}]:
+            with self.subTest(change=change):
+                self.request(json.dumps({**base, **change}).encode())
+
     def test_malformed_missing_and_oversized_requests_refuse(self):
         for raw in [b"[]", b"{}", b"not-json", b" " * 16385]:
             with self.subTest(length=len(raw)):

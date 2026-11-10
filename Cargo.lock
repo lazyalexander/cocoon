@@ -50,15 +50,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cocoon-guest-fixture"
+version = "0.1.0"
+
+[[package]]
 name = "cocoon-host"
 version = "0.1.0"
 dependencies = [
+ "cocoon-platform",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "uuid",
 ]
+
+[[package]]
+name = "cocoon-platform"
+version = "0.1.0"
 
 [[package]]
 name = "cocoon-runtime"

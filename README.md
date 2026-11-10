@@ -56,9 +56,9 @@ Neither experiment depends on an-agent or starts existing Docker/Lima machines.
 
 ## Next acceptance gate
 
-Add a writable Linux root filesystem and prove modifications survive a confirmed
-stop and restart. The current qualified experiment has no disk and runs a fixed
-workload. It uses Virtualization.framework directly; OCI management is deferred.
+The fixed Rust ext4-root fixture now passes ten persistence cycles. Next add
+the Debian userland and production guest-helper/control path; fixed-workload
+acceptance does not qualify those capabilities. It uses Virtualization.framework directly; OCI management is deferred.
 Only then connect a real backend to admission, durable ownership, reconciliation
 and artifact custody. No native fallback is allowed when VM execution is selected.
 

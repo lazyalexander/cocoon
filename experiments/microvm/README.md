@@ -165,3 +165,5 @@ measurements, not cold-cache boots, full Linux development environments, total
 memory accounting or Firecracker comparisons. Raw reports remain private under
 ignored `runs/`. Writable-root persistence, guest helper access and production
 ownership recovery remain unimplemented and unqualified.
+
+See the [Rust persistent-root experiment](PERSISTENCE.md) for the new bounded disk path.

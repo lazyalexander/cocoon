@@ -44,10 +44,10 @@ count with CPU time quotas or benchmark results with Firecracker equivalence.
 ## Current implementation status
 
 The host foundation implements SQLite records, read-only image copies with
-SHA-256 verification, provenance recording, independent full-copy work disks,
+SHA-256 verification, provenance recording, independent work disks,
 idempotent registration by caller-selected VM UUID, and pending operation
-inspection. The full-copy implementation does not yet preserve sparse allocation
-or use APFS clones. Prepared VM defaults are 1 vCPU, 512 MiB and no networking.
+inspection. Disk copying now prefers APFS clones and otherwise preserves sparse allocation;
+copy metadata records logical and allocated bytes. Prepared VM defaults are 1 vCPU, 512 MiB and no networking.
 
 `retain`, `rollback` and `branch` are stored policies only; their execution is not
 implemented. Inputs are not validated as bootable Debian images. Image import
@@ -70,9 +70,11 @@ these copies are not tamper-proof against that user. Failed operations remain
 pending for inspection; automated reconciliation is not implemented.
 
 `vm start VM_UUID` deliberately returns execution unavailable without launching a
-host process or VM. Local socket service, grants, leases, disk recovery, guest
-helper, production runner integration, image builder and real VM acceptance are
-still outstanding. Existing diskless experiments remain separate.
+host process or VM. Local socket service, grants, production leases/recovery, general guest helper
+and production runner integration remain outstanding. A separate fixed Rust
+persistent-root experiment adds an image builder, per-boot records and bounded
+supervision; see its dedicated documentation. The public start command remains
+unavailable. Existing diskless experiments remain separate.
 
 Before committing: Rust tests, Clippy with warnings denied, formatting checks,
 Python harness tests and native protocol checks. Real macOS execution is required
@@ -81,7 +83,7 @@ operator paths; publishing requires explicit authorization.
 
 Diskless M1 progress: pinned Debian kernel passed roundtrip, deadline and cancel
 at 128 MiB, plus 30/30 repeated roundtrips. See the experiment README for the
-measurement limits. Persistent-root M1 acceptance remains pending.
+measurement limits. Full Debian-userland M1 acceptance remains pending.
 
 The [v0.1 acceptance specification](../SPECIFICATION.md) governs completion of
 these milestones. Its persistent-root gates supersede the 30-boot exploration
@@ -93,3 +95,7 @@ The specification separates mandatory latency budgets from optional optimization
 objectives, and capacity estimates from measured support. Heavy-workload counts
 are planning guidance only; no full-image publication or Internet timing promise
 is inferred from disk-clone or local-transfer measurements.
+
+The fixed Rust ext4-root fixture now passed ten persistence cycles (20 boots),
+including permissions, root/executable checks and confirmed stops. Debian
+userland, production helper and broader v0.1 acceptance remain pending.

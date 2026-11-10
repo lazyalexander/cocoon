@@ -207,10 +207,11 @@ keeps v0.1 unfinished; it does not justify adding unrelated features.
 
 ### Current evidence
 
-Only the fixed, diskless C guest has passed real roundtrip, deadline, cancellation
-and 30 repeated boots at 128 MiB. This establishes none of the persistent-root
-performance gates. Host registration and contract tests are groundwork. All
-v0.1 gates above remain pending until corresponding full-path evidence exists.
+The diskless C guest passed real roundtrip, deadline, cancellation and 30 repeated
+boots at 128 MiB. Separately, the fixed Rust root-disk fixture passed ten write /
+confirmed-stop / reboot-read cycles (20 distinct boots) with an unchanged baseline.
+This is not the Debian production helper, agent access or full release acceptance.
+All v0.1 gates remain pending until corresponding full-path evidence exists.
 
 ### Reference
 

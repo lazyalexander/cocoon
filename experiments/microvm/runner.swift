@@ -13,6 +13,9 @@ struct Request: Decodable {
     let diskMode: String?
     let payload: String?
     let project: String?
+    let snapshotMode: String?
+    let snapshotPath: String?
+    let restorePath: String?
 }
 
 func hostDiagnostics() -> [String: Any] {
@@ -122,6 +125,9 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         report["memory_mib"] = req.memoryMiB
         report["vcpus"] = 1
         report["framework_supported"] = VZVirtualMachine.isSupported
+        if req.snapshotMode != nil {
+            report["snapshot_saved"] = false
+        }
         let loader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: req.kernel))
         loader.initialRamdiskURL = URL(fileURLWithPath: req.initrd)
         // Stay halted on panic; negative panic timeouts reboot immediately.
@@ -297,8 +303,9 @@ do {
     guard data.count <= 16384 else { throw NSError(domain: "request too large", code: 1) }
     let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     let allowed = Set(["kernel", "initrd", "token", "memoryMiB", "seconds"])
-    let diskFields = Set(["rootDisk", "diskMode", "payload"])
-    guard let fields = fields, Set(fields.keys) == allowed || Set(fields.keys) == allowed.union(diskFields) || Set(fields.keys) == allowed.union(diskFields).union(["project"]) else {
+    let optional = Set(["rootDisk", "diskMode", "payload", "project", "snapshotMode", "snapshotPath", "restorePath"])
+    guard let fields = fields, Set(fields.keys).isSuperset(of: allowed),
+          Set(fields.keys).isSubset(of: allowed.union(optional)) else {
         throw NSError(domain: "unknown or missing request fields", code: 1)
     }
     let req = try JSONDecoder().decode(Request.self, from: data)
@@ -317,6 +324,20 @@ do {
     }
     guard (req.diskMode == "project") == (req.project != nil), req.project == nil || req.project!.hasPrefix("/") else {
         throw NSError(domain: "invalid project fixture request", code: 1)
+    }
+    if let mode = req.snapshotMode {
+        let path = mode == "save" ? req.snapshotPath : req.restorePath
+        guard ["save", "restore"].contains(mode), let path,
+              path.hasPrefix("/"), path.count <= 4096,
+              path != req.kernel, path != req.initrd, path != req.rootDisk else {
+            throw NSError(domain: "invalid snapshot request", code: 1)
+        }
+        guard (mode == "save") == (req.snapshotPath != nil),
+              (mode == "restore") == (req.restorePath != nil) else {
+            throw NSError(domain: "ambiguous snapshot request", code: 1)
+        }
+    } else if req.snapshotPath != nil || req.restorePath != nil {
+        throw NSError(domain: "snapshot path requires a mode", code: 1)
     }
     runner.queue.async { runner.begin(req) }
     dispatchMain()

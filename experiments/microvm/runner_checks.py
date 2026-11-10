@@ -11,17 +11,20 @@ BINARY = None
 
 
 class RunnerProtocolTests(unittest.TestCase):
-    def request(self, raw):
+    def response(self, raw):
         with tempfile.TemporaryDirectory(prefix="cocoon-request-") as directory:
             path = pathlib.Path(directory) / "request.json"
             path.write_bytes(raw)
             result = subprocess.run([str(BINARY), str(path)], capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 2)
-            report = json.loads(result.stdout)
-            self.assertEqual(report["status"], "invalid_request")
-            self.assertFalse(report["termination_confirmed"])
-            self.assertFalse(report["guest_ready"])
-            self.assertNotIn("start_requested_ms", report)
+            return json.loads(result.stdout)
+
+    def request(self, raw):
+        report = self.response(raw)
+        self.assertEqual(report["status"], "invalid_request")
+        self.assertFalse(report["termination_confirmed"])
+        self.assertFalse(report["guest_ready"])
+        self.assertNotIn("start_requested_ms", report)
 
     def test_unknown_fields_and_invalid_bounds_refuse_before_vm_start(self):
         base = {"kernel": "/unused-kernel", "initrd": "/unused-initrd",
@@ -51,6 +54,35 @@ class RunnerProtocolTests(unittest.TestCase):
                        {"diskMode":"project", "project":None}]:
             with self.subTest(change=change):
                 self.request(json.dumps({**base, **change}).encode())
+
+    def test_snapshot_fields_are_complete_bounded_and_unambiguous(self):
+        base = {"kernel": "/unused-kernel", "initrd": "/unused-initrd",
+                "token": "a" * 32, "memoryMiB": 512, "seconds": 1}
+        cases = [
+            {"snapshotMode": "save"},
+            {"snapshotMode": "restore"},
+            {"snapshotMode": "other", "snapshotPath": "/unused-state"},
+            {"snapshotMode": "save", "snapshotPath": "relative-state"},
+            {"snapshotMode": "restore", "restorePath": "relative-state"},
+            {"snapshotMode": "save", "snapshotPath": "/state", "restorePath": "/state"},
+            {"snapshotMode": "restore", "restorePath": "/unused-kernel"},
+            {"snapshotMode": "save", "snapshotPath": "/" + "a" * 4096},
+            {"snapshotMode": "save", "restorePath": "/state"},
+            {"snapshotMode": "restore", "snapshotPath": "/state"},
+            {"snapshotPath": "/state"},
+            {"restorePath": "/state"},
+        ]
+        for change in cases:
+            with self.subTest(change=change):
+                self.request(json.dumps({**base, **change}).encode())
+        valid = [
+            {"snapshotMode": "save", "snapshotPath": "/unused-state"},
+            {"snapshotMode": "restore", "restorePath": "/unused-state"},
+        ]
+        for change in valid:
+            with self.subTest(valid=change):
+                report = self.response(json.dumps({**base, **change}).encode())
+                self.assertNotEqual(report["status"], "invalid_request")
 
     def test_malformed_missing_and_oversized_requests_refuse(self):
         for raw in [b"[]", b"{}", b"not-json", b" " * 16385]:

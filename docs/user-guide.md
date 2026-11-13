@@ -181,8 +181,8 @@ Build the helper-enabled fixture and run the combined real-VM path:
 ```sh
 python3 experiments/microvm/root_modules.py --project
 python3 experiments/microvm/build_root.py --project
-python3 experiments/microvm/probe.py build
-cargo build --offline --release -p cocoon
+./tools/build runner
+cargo build --locked --release -p cocoon
 python3 experiments/microvm/production_acceptance.py \
   --fixture /absolute/private/root-BUILD_ID \
   --kernel /absolute/private/linux --automatic-suspend
@@ -190,7 +190,38 @@ python3 experiments/microvm/production_acceptance.py \
 
 Add `--corrupt-before-resume` to exercise real snapshot corruption, explicit cold
 recovery approval, and subsequent automatic suspension. The harness creates a
-private state directory, starts the socket service, writes and executes guest
-content, exports and byte-checks a 12,000-byte artifact, suspends/resumes with new
-identity, saves/promotes a candidate, boots a branch, stops it, and rolls back the
-original VM. It does not publish credentials or raw reports.
+private state directory and starts the socket service. The primary agent imports
+a small directory of knowledge and code through its scoped API, edits a guest
+script, checks and builds it, and byte-checks the exported result. The harness
+also exports a 12,000-byte binary artifact, suspends/resumes with new identity,
+saves/promotes a candidate, boots a branch, stops it, and rolls back the original
+VM. It does not publish credentials or raw reports.
+
+## 8. Run a project as the primary agent
+
+After the operator starts a managed VM and issues a work grant with `inspect`,
+`guest`, and `export` actions, the primary agent can use
+[`examples/agent_project.py`](../examples/agent_project.py). The operator supplies
+the private state path, a mode-0600 grant token file, and a mode-0600 JSON file
+containing the successful `start` result. The caller must match the grant subject.
+
+```sh
+python3 examples/agent_project.py \
+  --state /absolute/private/state --caller agent \
+  --grant-file /absolute/private/grant \
+  --authority-file /absolute/private/start.json \
+  --project /absolute/private/project \
+  --command-json '["/bin/sh","src/check.sh"]' \
+  --command-json '["/bin/sh","src/build.sh"]' \
+  --artifact result.txt --output-name result.txt
+```
+
+`--project` imports regular files recursively into `/workspace`; it rejects
+symlinks and limits one import to 64 files, 32 MiB total, and 16 MiB per file.
+Empty directories are not imported. `--input` can add individual files at the
+workspace root when their names do not collide with project root entries.
+Commands run in order and stop on the first failed guest exit.
+The fixture provides a minimal shell, not an arbitrary language toolchain. The
+export remains in host-owned private state; the operator handles VM stop and
+later retention or cleanup. After an uncertain response, use `--status-id` with
+the original operation UUID to reconcile it before taking further action.

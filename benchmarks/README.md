@@ -2,6 +2,9 @@
 
 English (authoritative) · [简体中文](README.zh-CN.md)
 
+[Execution design](DESIGN.md) maps the v0.1 gates to exact workloads, sample
+counts, timing boundaries, evidence and blocked-feature reporting.
+
 Measure release builds on a named Apple Silicon host with pinned macOS, kernel,
 root image, runner, Rust toolchain and power mode. Record their hashes/versions in
 a private run manifest. Use the actual Rust host service and framework runner;

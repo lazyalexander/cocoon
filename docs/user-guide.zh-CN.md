@@ -161,14 +161,40 @@ fixture 也可能在 stdout 输出 JSON 报告，应同时保留并检查退出�
 ```sh
 python3 experiments/microvm/root_modules.py --project
 python3 experiments/microvm/build_root.py --project
-python3 experiments/microvm/probe.py build
-cargo build --offline --release -p cocoon
+./tools/build runner
+cargo build --locked --release -p cocoon
 python3 experiments/microvm/production_acceptance.py \
   --fixture /absolute/private/root-BUILD_ID \
   --kernel /absolute/private/linux --automatic-suspend
 ```
 
 加入 `--corrupt-before-resume` 可实际损坏快照，验证显式冷恢复批准及之后的主动挂起。
-工具创建私有状态目录、启动 socket 服务、写入并执行 guest 内容、导出并逐字节检查
-12,000 字节产物、以新身份挂起/恢复、保存并批准候选、启动分支、停止分支并回滚原 VM。
-不会发布凭据或原始报告。
+工具创建私有状态目录并启动 socket 服务。主 agent 经限权 API 导入含知识与代码的
+小项目、修改 guest 脚本、运行检查和构建，再逐字节校验导出结果。工具还导出并校验
+12,000 字节的二进制产物、以新身份挂起/恢复、保存并批准候选、启动分支、停止分支并
+回滚原 VM。不会发布凭据或原始报告。
+
+## 8. 主 agent 运行项目
+
+操作员启动管理 VM 并发放含 `inspect`、`guest` 和 `export` 权限的工作 grant 后，
+主 agent 可使用 [`examples/agent_project.py`](../examples/agent_project.py)。操作员提供
+私有状态绝对路径、权限为 0600 的 grant token 文件，以及保存成功 `start` 结果的
+0600 JSON 文件。caller 必须与 grant subject 一致。
+
+```sh
+python3 examples/agent_project.py \
+  --state /absolute/private/state --caller agent \
+  --grant-file /absolute/private/grant \
+  --authority-file /absolute/private/start.json \
+  --project /absolute/private/project \
+  --command-json '["/bin/sh","src/check.sh"]' \
+  --command-json '["/bin/sh","src/build.sh"]' \
+  --artifact result.txt --output-name result.txt
+```
+
+`--project` 将普通文件递归导入 `/workspace`，拒绝符号链接；单次最多 64 个文件、
+总计 32 MiB，每个文件最多 16 MiB。不会导入空目录。`--input` 可在工作区根目录
+另加单个文件，但不能与项目根目录条目重名。命令依次执行，首个 guest 失败即停止。当前 fixture 只提供最小 shell，
+不含任意语言工具链。导出产物留在宿主拥有的私有状态中；VM 停止和后续保留或清理由
+操作员负责。如果响应结果未知，先用原操作 UUID 配合 `--status-id` 核对，再决定后续
+动作。

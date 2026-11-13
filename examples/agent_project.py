@@ -10,8 +10,9 @@ reconciliation, never replayed with a new ID.
 Example:
   python3 examples/agent_project.py --state /absolute/private/state \
     --caller agent --grant-file /private/grant --authority-file /private/start.json \
-    --input /private/knowledge.txt --input /private/build.sh \
-    --command-json '["/bin/sh","build.sh"]' \
+    --project /private/project \
+    --command-json '["/bin/sh","src/check.sh"]' \
+    --command-json '["/bin/sh","src/build.sh"]' \
     --artifact result.txt --output-name result.txt
 
 After an uncertain response, query its original ID:
@@ -33,6 +34,8 @@ import uuid
 MAX_FRAME = 32768
 CHUNK = 4000
 MAX_FILE = 16 * 1024 * 1024
+MAX_FILES = 64
+MAX_IMPORT = 32 * 1024 * 1024
 
 
 class OutcomeUnknown(Exception):
@@ -132,11 +135,18 @@ class WorkClient:
             raise RuntimeError(f"guest rejected operation: {result['Err']}")
         return result["Ok"]
 
-    def import_file(self, source):
+    def import_file(self, source, guest_name=None):
         source = pathlib.Path(source)
-        if source.name in {"", ".", ".."} or "/" in source.name:
+        guest_name = guest_name or source.name
+        parts = pathlib.PurePosixPath(guest_name).parts
+        if not parts or any(part in {"", ".", ".."} for part in parts) or guest_name.startswith("/"):
             raise ValueError("invalid input filename")
-        destination = "/workspace/" + source.name
+        destination = "/workspace/" + "/".join(parts)
+        if len(parts) > 1:
+            parent = "/workspace/" + "/".join(parts[:-1])
+            made = self.run(["/bin/mkdir", "-p", parent])
+            if made.get("code") != 0 or made.get("timed_out"):
+                raise RuntimeError("guest directory creation failed")
         offset = 0
         digest = hashlib.sha256()
         descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
@@ -157,6 +167,31 @@ class WorkClient:
             self.guest({"kind": "write_bytes", "path": destination,
                         "content_hex": "", "offset": 0, "sync": True})
         return {"guest_path": destination, "bytes": offset, "sha256": digest.hexdigest()}
+
+    def import_project(self, root):
+        root = pathlib.Path(root)
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("project must be a real directory")
+        files = []
+        total = 0
+        for parent, dirs, names in os.walk(root, followlinks=False):
+            dirs.sort()
+            names.sort()
+            for name in [*dirs, *names]:
+                if (pathlib.Path(parent) / name).is_symlink():
+                    raise ValueError("project symlinks are unsupported")
+            for name in names:
+                path = pathlib.Path(parent) / name
+                info = path.stat(follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("project contains a non-regular file")
+                total += info.st_size
+                files.append((path, path.relative_to(root).as_posix()))
+                if len(files) > MAX_FILES or total > MAX_IMPORT or info.st_size > MAX_FILE:
+                    raise ValueError("project exceeds import limits")
+        if not files:
+            raise ValueError("project has no files")
+        return [self.import_file(path, relative) for path, relative in files]
 
     def run(self, argv):
         result = self.guest({"kind": "exec", "argv": argv, "cwd": "/workspace"})
@@ -181,7 +216,8 @@ def main():
     parser.add_argument("--grant-file", required=True, help="Private file containing the one-time grant token")
     parser.add_argument("--authority-file", required=True, help="Private JSON response from VM start")
     parser.add_argument("--input", action="append", help="File imported into /workspace; repeat as needed")
-    parser.add_argument("--command-json", help='argv JSON, e.g. ["/bin/sh","build.sh"]')
+    parser.add_argument("--project", help="Directory recursively imported into /workspace")
+    parser.add_argument("--command-json", action="append", help='argv JSON; repeat for test then build')
     parser.add_argument("--artifact", help="Artifact filename inside /workspace")
     parser.add_argument("--output-name", help="Host-chosen export filename")
     parser.add_argument("--status-id", help="Inspect an original operation ID; never resubmit it")
@@ -191,29 +227,36 @@ def main():
         authority = authority["result"]["Ok"]
     client = WorkClient(args.state, args.caller, read_private_text(args.grant_file, 128), authority)
     if args.status_id:
-        if any([args.input, args.command_json, args.artifact, args.output_name]):
+        if any([args.input, args.project, args.command_json, args.artifact, args.output_name]):
             parser.error("--status-id cannot be combined with a new project run")
         print(json.dumps(client.call({"operation": "operation_status",
                                       "id": str(uuid.UUID(args.status_id))}), indent=2))
         return
-    if not all([args.input, args.command_json, args.artifact, args.output_name]):
-        parser.error("project run requires --input, --command-json, --artifact and --output-name")
+    if not (args.input or args.project) or not all([args.command_json, args.artifact, args.output_name]):
+        parser.error("run requires --project or --input, command, artifact and output name")
     context = client.context()
     if context.get("schema") != "cocoon-agent-context-v1" or not context["work"]["guest_ready"]:
         raise RuntimeError("VM is not ready for this work grant")
-    argv = json.loads(args.command_json)
-    if not isinstance(argv, list) or not argv or not all(isinstance(s, str) for s in argv) or not argv[0].startswith("/"):
-        raise ValueError("command must be a JSON array with an absolute executable")
-    names = [pathlib.Path(path).name for path in args.input]
+    commands = [json.loads(command) for command in args.command_json]
+    if any(not isinstance(argv, list) or not argv or not all(isinstance(s, str) for s in argv)
+           or not argv[0].startswith("/") for argv in commands):
+        raise ValueError("each command must be a JSON array with an absolute executable")
+    names = [pathlib.Path(path).name for path in args.input or []]
     if len(names) != len(set(names)):
         raise ValueError("input filenames must be unique")
-    inputs = [client.import_file(path) for path in args.input]
-    outcome = client.run(argv)
-    if outcome.get("code") != 0 or outcome.get("timed_out"):
-        raise RuntimeError("guest command failed; inspect the original operation before retrying")
+    if args.project and set(names) & {entry.name for entry in os.scandir(args.project)}:
+        raise ValueError("input filenames must not replace project root entries")
+    inputs = client.import_project(args.project) if args.project else []
+    inputs += [client.import_file(path) for path in args.input or []]
+    outcomes = []
+    for argv in commands:
+        outcome = client.run(argv)
+        if outcome.get("code") != 0 or outcome.get("timed_out"):
+            raise RuntimeError("guest command failed; inspect the original operation before retrying")
+        outcomes.append({"code": outcome["code"], "timed_out": outcome["timed_out"]})
     artifact = client.export(args.artifact, args.output_name)
     print(json.dumps({"vm": client.vm, "attempt": client.attempt, "inputs": inputs,
-                      "command": {"code": outcome["code"], "timed_out": outcome["timed_out"]},
+                      "commands": outcomes,
                       "artifact": artifact}, indent=2))
 
 

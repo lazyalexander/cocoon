@@ -6,9 +6,13 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import time
 import uuid
-from probe import ROOT, BUILD
+from probe import ROOT
+
+sys.path.insert(0, str(ROOT.parent.parent / "examples"))
+from agent_project import WorkClient
 
 
 def main():
@@ -21,7 +25,7 @@ def main():
     fixture = args.fixture.resolve(strict=True)
     kernel = args.kernel.resolve(strict=True)
     cli = ROOT.parent.parent / "target/release/cocoon"
-    runner = BUILD / "cocoon-vz"
+    runner = ROOT.parent.parent / "target/cocoon-vz/cocoon-vz"
     state = ROOT / "runs" / ("production-" + uuid.uuid4().hex)
     state.mkdir(mode=0o700)
 
@@ -105,6 +109,25 @@ def main():
     try:
         authority = api({"operation": "start", "vm": vm})
         refresh(vm)
+        project = state / "project"
+        (project / "knowledge").mkdir(parents=True)
+        (project / "src").mkdir()
+        (project / "knowledge" / "recipe.txt").write_text("Cocoon project\n")
+        script = project / "src" / "build.sh"
+        script.write_text("exit 1\n")
+        primary = WorkClient(state, "agent", tokens[vm], authority)
+        assert primary.context()["work"]["guest_ready"]
+        imported = primary.import_project(project)
+        assert len(imported) == 2
+        script.write_text("set -eu\ncat knowledge/recipe.txt > result.txt\n")
+        primary.import_file(script, "src/build.sh")
+        checked = primary.run(["/bin/sh", "-c", "test -s knowledge/recipe.txt && test -s src/build.sh"])
+        built = primary.run(["/bin/sh", "src/build.sh"])
+        assert checked["code"] == 0 and built["code"] == 0
+        project_artifact = primary.export("result.txt", "project-result.txt")
+        project_bytes = (state / "vms" / vm / authority["attempt"]["id"] / "exports" / "project-result.txt").read_bytes()
+        assert project_bytes == b"Cocoon project\n"
+        assert project_artifact["sha256"] == hashlib.sha256(project_bytes).hexdigest()
         expected = bytes((index * 31) % 256 for index in range(12000))
         for offset in range(0, len(expected), 4000):
             chunk = expected[offset:offset + 4000]
@@ -198,6 +221,7 @@ def main():
         api({"operation": "stop", "vm": vm})
         stopped = api({"operation": "show", "vm": vm})
         summary = {"schema": "cocoon-production-acceptance-v1", "passed": True,
+                   "primary_agent_project": True, "project_artifact_sha256": project_artifact["sha256"],
                    "binary_bytes": len(expected), "artifact_sha256": artifact["sha256"],
                    "generation": rollback_authority["generation"],
                    "snapshot_resume": not args.corrupt_before_resume or args.automatic_suspend,

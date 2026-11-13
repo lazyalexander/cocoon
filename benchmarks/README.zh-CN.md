@@ -31,3 +31,11 @@ JSONL 每行格式见 [English](README.md)；
 `python3 benchmarks/analyze.py private-samples.jsonl` 检查身份并统计，
 不采集或伪造样本。原始数据、运行清单、guest 输出与私有路径不入 Git。
 发布资格需要真实 macOS VM 证据与人工审阅；CI 只运行确定性检查，不做抖动较大的时延门禁。
+
+操作员运行 `reclaim_cycles.py` 可验证真实创建、guest 命令、确认停止和宿主回收。
+默认运行 100 轮，仅保存私有摘要；它是可靠性门槛，不是时延采集器：
+
+```sh
+python3 benchmarks/reclaim_cycles.py --fixture /absolute/private/root-BUILD_ID \
+  --kernel /absolute/private/linux --cycles 100
+```

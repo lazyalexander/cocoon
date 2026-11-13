@@ -144,6 +144,9 @@ The complete command reference is:
 | `operations` | Inspect import/create intents and completion; per-boot records are separate. |
 | `vm start VM_UUID RUNNER` | Start a real managed VM with the explicit signed runner; return attempt/generation/lease. |
 | `vm stop VM_UUID` / `vm reconcile VM_UUID` | Request confirmed stop or reconcile retained observations. |
+| `vm emergency-stop VM_UUID` | Operator-only stop attempt for a running or uncertain execution. |
+| `vm reclaim VM_UUID` / `vm reconcile-reclaim VM_UUID` | Operator-only reclaim after confirmed stop; explicitly finish an interrupted reclaim. |
+| `vm reclaim-status VM_UUID` | Inspect `pending` or `complete` reclaim intent; a missing intent returns `null`. |
 | `serve RUNNER` | Serve the authenticated private host socket with a fixed runner. |
 | `experiment persistence VM_UUID RUNNER write\|read PAYLOAD` | One bounded fixture boot; RUNNER is an absolute ARM64 Mach-O path, PAYLOAD is 32 hexadecimal characters. |
 
@@ -167,12 +170,14 @@ stdout. Capture both and check the exit status.
 | Unknown VM state / reconciliation required | Preserve original records, observations and disk; run reconcile. Never clear state or reuse a disk to force a retry. |
 | Snapshot recovery required | Review the failed snapshot and explicitly approve cold recovery from the persistent working disk; automatic cold recovery is not attempted. |
 
-Stopping does not mean deleting. There is no supported automatic uninstall/VM
-cleanup command yet. Before manually removing any private state or build data,
-establish that no VM or process still owns it and retain any required evidence.
-Never use deletion as reconciliation. Read-only queries do not grant cleanup
-permission. Keep working disks and private reports out of commits and support
-attachments; share sanitized summaries instead.
+Stopping does not mean deleting. The operator can reclaim a confirmed-stopped VM
+with `vm reclaim`; exported files move to `STATE/artifacts/VM_UUID/ATTEMPT_UUID/`,
+and the VM's working directory is removed. A failed reclaim retains a durable
+intent and blocks new boots; inspect it with `vm reclaim-status` and use
+`vm reconcile-reclaim` explicitly.
+The VM UUID remains reserved. Do not manually delete state as reconciliation.
+Keep working disks and private reports out of commits and support attachments;
+share sanitized summaries instead.
 
 ## 7. Managed agent acceptance
 
@@ -194,8 +199,9 @@ private state directory and starts the socket service. The primary agent imports
 a small directory of knowledge and code through its scoped API, edits a guest
 script, checks and builds it, and byte-checks the exported result. The harness
 also exports a 12,000-byte binary artifact, suspends/resumes with new identity,
-saves/promotes a candidate, boots a branch, stops it, and rolls back the original
-VM. It does not publish credentials or raw reports.
+saves/promotes a candidate, boots a branch, stops it, rolls back the original
+VM, then reclaims both stopped VMs while retaining the exported project result.
+It does not publish credentials or raw reports.
 
 ## 8. Run a project as the primary agent
 
@@ -223,5 +229,5 @@ workspace root when their names do not collide with project root entries.
 Commands run in order and stop on the first failed guest exit.
 The fixture provides a minimal shell, not an arbitrary language toolchain. The
 export remains in host-owned private state; the operator handles VM stop and
-later retention or cleanup. After an uncertain response, use `--status-id` with
+reclaim. After an uncertain response, use `--status-id` with
 the original operation UUID to reconcile it before taking further action.

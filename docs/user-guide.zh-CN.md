@@ -129,6 +129,9 @@ target/release/cocoon host "$COCOON_STATE" operations
 | `operations` | 查询导入/创建意图及完成状态；启动记录另行保存。 |
 | `vm start VM_UUID RUNNER` | 用显式签名 runner 启动真实管理 VM，返回 attempt/generation/lease。 |
 | `vm stop VM_UUID` / `vm reconcile VM_UUID` | 请求确认停止或核对保留观测。 |
+| `vm emergency-stop VM_UUID` | 操作员对运行中或状态不确定的执行发起紧急停止。 |
+| `vm reclaim VM_UUID` / `vm reconcile-reclaim VM_UUID` | 操作员在确认停止后回收；显式完成中断的回收。 |
+| `vm reclaim-status VM_UUID` | 查询 `pending` 或 `complete` 回收意图；无意图返回 `null`。 |
 | `serve RUNNER` | 用固定 runner 启动经认证的私有宿主 socket 服务。 |
 | `experiment persistence VM_UUID RUNNER write\|read PAYLOAD` | 一次有界 fixture 启动；RUNNER 须为 ARM64 Mach-O 绝对路径，PAYLOAD 为 32 个十六进制字符。 |
 
@@ -150,9 +153,11 @@ fixture 也可能在 stdout 输出 JSON 报告，应同时保留并检查退出�
 | VM 未知状态、要求 reconciliation | 保留原 VM/启动记录、runner 观测和磁盘，执行核对；不清记录或复用磁盘强行重试。 |
 | 快照要求 recovery_required | 审阅失败快照，显式批准从持久工作磁盘冷恢复；不自动冷恢复。 |
 
-停止不等于删除。目前没有受支持的自动卸载/VM 清理命令。手动移除私有状态或构建
-产物前，必须确认没有 VM/进程仍占有它们，并保留必要证据。不能用删除代替核对；
-只读查询不授予清理权限。工作磁盘和私有报告不进入提交或支持附件，只分享脱敏摘要。
+停止不等于删除。操作员可对已确认停止的 VM 使用 `vm reclaim`；导出文件转移到
+`STATE/artifacts/VM_UUID/ATTEMPT_UUID/`，VM 工作目录被移除。回收失败会留下持久意图
+并阻止再次启动；用 `vm reclaim-status` 审查后显式运行 `vm reconcile-reclaim`。VM UUID
+永久保留，不能用
+手动删除代替核对。工作磁盘和私有报告不进入提交或支持附件，只分享脱敏摘要。
 
 ## 7. 管理链路 agent 验收
 
@@ -172,7 +177,7 @@ python3 experiments/microvm/production_acceptance.py \
 工具创建私有状态目录并启动 socket 服务。主 agent 经限权 API 导入含知识与代码的
 小项目、修改 guest 脚本、运行检查和构建，再逐字节校验导出结果。工具还导出并校验
 12,000 字节的二进制产物、以新身份挂起/恢复、保存并批准候选、启动分支、停止分支并
-回滚原 VM。不会发布凭据或原始报告。
+回滚原 VM，随后回收两台已停止 VM，同时保留导出的项目结果。不会发布凭据或原始报告。
 
 ## 8. 主 agent 运行项目
 
@@ -195,6 +200,6 @@ python3 examples/agent_project.py \
 `--project` 将普通文件递归导入 `/workspace`，拒绝符号链接；单次最多 64 个文件、
 总计 32 MiB，每个文件最多 16 MiB。不会导入空目录。`--input` 可在工作区根目录
 另加单个文件，但不能与项目根目录条目重名。命令依次执行，首个 guest 失败即停止。当前 fixture 只提供最小 shell，
-不含任意语言工具链。导出产物留在宿主拥有的私有状态中；VM 停止和后续保留或清理由
+不含任意语言工具链。导出产物留在宿主拥有的私有状态中；VM 停止和回收由
 操作员负责。如果响应结果未知，先用原操作 UUID 配合 `--status-id` 核对，再决定后续
 动作。

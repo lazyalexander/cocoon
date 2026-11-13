@@ -8,4 +8,4 @@
 
 ## 边界
 
-store.rs 管理数据库/schema，grants.rs 管理工作授权，api.rs 负责路由，lifecycle.rs 负责生命周期监督，versions.rs 负责镜像版本保管。未知执行结果须核对；guest 数据不能证明终止。
+store.rs 管理数据库/schema，grants.rs 管理工作授权，api.rs 负责路由，lifecycle.rs 负责生命周期监督，reclaim.rs 负责宿主回收意图与产物保留，versions.rs 负责镜像版本保管。未知执行结果须核对；guest 数据不能证明终止。回收要求确认停止证据，工作 grant 无法授权回收。

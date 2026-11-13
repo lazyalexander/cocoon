@@ -36,3 +36,12 @@ computes summary statistics. It does not collect or synthesize measurements.
 Keep raw samples, manifests, guest output and private paths out of Git. Release
 qualification requires real macOS VM evidence and explicit human review; CI
 runs deterministic checks only, not noisy timing gates.
+
+The operator-run `reclaim_cycles.py` exercises real create, guest command,
+confirmed stop and host reclaim. It defaults to 100 cycles and records only a
+private summary; it is a reliability gate, not a latency collector:
+
+```sh
+python3 benchmarks/reclaim_cycles.py --fixture /absolute/private/root-BUILD_ID \
+  --kernel /absolute/private/linux --cycles 100
+```

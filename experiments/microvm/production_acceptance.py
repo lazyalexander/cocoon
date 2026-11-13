@@ -220,13 +220,21 @@ def main():
         assert rolled_back["result"]["Ok"]["stdout"] == "ROLLBACK_PASS"
         api({"operation": "stop", "vm": vm})
         stopped = api({"operation": "show", "vm": vm})
+        assert stopped["state"] == "stopped" and stopped["active_lease"] is None
+        api({"operation": "reclaim", "vm": branch})
+        api({"operation": "reclaim", "vm": vm})
+        archived = state / "artifacts" / vm / first_attempt / "project-result.txt"
+        assert archived.read_bytes() == project_bytes
+        assert not (state / "vms" / vm).exists()
+        assert not (state / "vms" / branch).exists()
         summary = {"schema": "cocoon-production-acceptance-v1", "passed": True,
                    "primary_agent_project": True, "project_artifact_sha256": project_artifact["sha256"],
                    "binary_bytes": len(expected), "artifact_sha256": artifact["sha256"],
                    "generation": rollback_authority["generation"],
                    "snapshot_resume": not args.corrupt_before_resume or args.automatic_suspend,
                    "cold_recovery": args.corrupt_before_resume, "automatic_suspend": args.automatic_suspend,
-                   "branch": True, "rollback_verified": True, "state": stopped["state"]}
+                   "branch": True, "rollback_verified": True, "reclaimed": True,
+                   "state": stopped["state"]}
     except BaseException as error:
         cleanup_errors = []
         for target in {vm, branch} - {None}:

@@ -6,7 +6,7 @@ use std::path::Path;
 pub(crate) fn open(root: &Path) -> Result<Connection> {
     let db = Connection::open(root.join("state.sqlite3"))?;
     let version: u32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 3 {
+    if version > 4 {
         return Err("unsupported database schema version".into());
     }
     db.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -20,7 +20,8 @@ pub(crate) fn open(root: &Path) -> Result<Connection> {
         CREATE TABLE IF NOT EXISTS rollback_intents(vm TEXT PRIMARY KEY, image TEXT NOT NULL, disk_copy TEXT);
         CREATE TABLE IF NOT EXISTS work_grants(id TEXT PRIMARY KEY, token_sha256 TEXT NOT NULL UNIQUE, parent TEXT, subject TEXT NOT NULL, vm TEXT NOT NULL, generation INTEGER NOT NULL, actions TEXT NOT NULL, expires_unix INTEGER NOT NULL, max_export_bytes INTEGER NOT NULL, revoked INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS consumer_operations(id TEXT PRIMARY KEY, parameter_sha256 TEXT NOT NULL, status TEXT NOT NULL, result TEXT, vm TEXT, attempt TEXT, generation INTEGER, grant_id TEXT);
-        PRAGMA user_version=3; COMMIT;")?;
+        CREATE TABLE IF NOT EXISTS reclaim_intents(vm TEXT PRIMARY KEY, status TEXT NOT NULL);
+        PRAGMA user_version=4; COMMIT;")?;
     db.execute("UPDATE images SET manifest=json_set(manifest,'$.approved',json('true')) WHERE json_extract(manifest,'$.approved') IS NULL", [])?;
     Ok(db)
 }

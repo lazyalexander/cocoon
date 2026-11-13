@@ -26,6 +26,7 @@ mod lifecycle;
 pub mod persistence;
 mod project;
 mod protection;
+mod reclaim;
 mod store;
 mod types;
 mod versions;
@@ -68,7 +69,7 @@ impl Manager {
         if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
             return Err("state directory must be a private directory (mode 0700)".into());
         }
-        for name in ["images", "vms"] {
+        for name in ["images", "vms", "artifacts"] {
             let dir = root.join(name);
             if !dir.exists() {
                 fs::DirBuilder::new().mode(0o700).create(&dir)?;
@@ -224,6 +225,9 @@ impl Manager {
         owner: &str,
         policy: FinishPolicy,
     ) -> Result<Vm> {
+        if self.reclaim_status(id)?.is_some() {
+            return Err("VM identity is reserved by a reclaim intent".into());
+        }
         if owner.is_empty() || owner.len() > 256 {
             return Err("invalid owner".into());
         }

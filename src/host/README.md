@@ -8,4 +8,4 @@ Workspace dependencies: platform, guest-wire, SQLite and serialization. See [arc
 
 ## Boundary
 
-Keep store/schema in store.rs, work grants in grants.rs, API routing in api.rs, lifecycle supervision in lifecycle.rs and image/version custody in versions.rs. Unknown execution outcomes require reconciliation; guest data never proves termination.
+Keep store/schema in store.rs, work grants in grants.rs, API routing in api.rs, lifecycle supervision in lifecycle.rs, host-owned reclaim intents and artifact retention in reclaim.rs, and image/version custody in versions.rs. Unknown execution outcomes require reconciliation; guest data never proves termination. Reclaim requires confirmed stop evidence and cannot be authorized by a work grant.

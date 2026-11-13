@@ -34,6 +34,9 @@ pub struct ExecutionRecord {
 }
 
 pub(crate) fn working_disk_lease(manager: &Manager, id: VmId) -> Result<fs::File> {
+    if manager.reclaim_status(id)?.is_some() {
+        return Err("VM is being reclaimed or has been reclaimed".into());
+    }
     let path = manager
         .root
         .join("vms")
@@ -123,7 +126,7 @@ fn retained_exit_is_recoverable(execution: &ExecutionRecord) -> bool {
 }
 
 impl Manager {
-    fn execution(&self, attempt: AttemptId) -> Result<ExecutionRecord> {
+    pub(crate) fn execution(&self, attempt: AttemptId) -> Result<ExecutionRecord> {
         let record: String = self.db().query_row(
             "SELECT record FROM executions WHERE attempt=?1",
             [attempt.to_string()],

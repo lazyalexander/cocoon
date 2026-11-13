@@ -43,6 +43,15 @@ pub enum HostOperation {
     Reconcile {
         vm: VmId,
     },
+    Reclaim {
+        vm: VmId,
+    },
+    ReclaimStatus {
+        vm: VmId,
+    },
+    ReconcileReclaim {
+        vm: VmId,
+    },
     Suspend {
         vm: VmId,
     },
@@ -242,6 +251,17 @@ impl Manager {
                 self.agent_context(vm, &request.caller, grant)
             }
             HostOperation::Reconcile { vm } => Ok(serde_json::to_value(self.reconcile(vm)?)?),
+            HostOperation::Reclaim { vm } => {
+                self.reclaim(vm)?;
+                Ok(serde_json::Value::Null)
+            }
+            HostOperation::ReclaimStatus { vm } => {
+                Ok(serde_json::to_value(self.reclaim_status(vm)?)?)
+            }
+            HostOperation::ReconcileReclaim { vm } => {
+                self.reconcile_reclaim(vm)?;
+                Ok(serde_json::Value::Null)
+            }
             HostOperation::Suspend { vm } => {
                 self.suspend(vm)?;
                 Ok(serde_json::Value::Null)
@@ -509,6 +529,9 @@ fn operation_vm(operation: &HostOperation) -> Result<VmId> {
         | HostOperation::Context { vm }
         | HostOperation::Stop { vm }
         | HostOperation::Start { vm }
+        | HostOperation::Reclaim { vm }
+        | HostOperation::ReclaimStatus { vm }
+        | HostOperation::ReconcileReclaim { vm }
         | HostOperation::EmergencyStop { vm }
         | HostOperation::Suspend { vm }
         | HostOperation::Resume { vm }

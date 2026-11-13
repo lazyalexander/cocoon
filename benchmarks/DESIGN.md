@@ -69,14 +69,14 @@ manifest instead. Grouping different configurations is forbidden.
 | Disk setup | APFS independent working-disk clone and durable publication. | 100; P95 <= 1 s. Full-copy fallback reported separately. |
 | Boot | Existing disk, create + boot, restart, first after host restart; authenticated fresh challenge. Keep three other VMs active except first-after-restart. | 100 each; five host restarts for first boot. Specification budgets. |
 | Guest command | No-op `/bin/true` in a running guest; separately run the versioned project edit/check/build/export path. | 100 each; no-op P95 <= 100 ms. Project phases are diagnostic until a gate is specified. |
-| Stop/version/reclaim | Forced stop to framework confirmation; stopped-VM rollback, branch and reclaim after artifacts are retained. | 100 each; stop has P95 <= 2 s and every sample <= 5 s. Unimplemented reclaim is blocked. |
+| Stop/version/reclaim | Forced stop to framework confirmation; stopped-VM rollback, branch and reclaim after artifacts are retained. | 100 each; stop has P95 <= 2 s and every sample <= 5 s. Reclaim timing still requires its own samples. |
 | File I/O | 4 KiB upload + download with digest; 100 MiB each direction, sequential and flushed. | 100 roundtrips; 30 transfers per direction, P5 >= 100 MiB/s. Current client chunk limits do not substitute for the 100 MiB gate. |
 | Footprint | Warm no-VM baseline, then one and eight idle VMs. Include manager, runner and attributable helpers. | 1 Hz for 60 s after 10 s idle; manager <= 32 MiB, per-VM increment <= 768 MiB, one-VM idle CPU <= 1% core. |
 | Capacity | Four active VMs, then eight resident with four active; primary agent per VM, optional guest subagents inside the same limit. Keep host editor/browser workload reproducible. | Two hours each; sample memory pressure/swap every 10 s and health challenges. All correctness and stop gates still apply. |
 | Recovery/security | At least 10 injections at each applicable durable boundary; invalid, stale, revoked and cross-VM grants. | Zero duplicate effects or unauthorized host actions; unknowns quarantined. No latency percentile can hide a failure. |
 
-The full 100 create/execute/stop/destroy cycle gate remains blocked until safe
-host-owned destroy exists. The same is true of mandatory NAT, root/non-root,
+The `reclaim_cycles.py` harness covers real create/execute/stop/reclaim cycles;
+its complete 100-cycle result is separate from latency qualification. Mandatory NAT, root/non-root,
 hostile guest-path and full-disk cases until the corresponding feature and
 fault-injection fixture exist. Keep these rows in the coverage manifest rather
 than silently omitting them.

@@ -163,8 +163,9 @@ median was 239.875 ms and nearest-rank P95 was 245.762 ms, measured from runner
 initialization. Caches were not flushed. These are fixed-workload diskless
 measurements, not cold-cache boots, full Linux development environments, total
 memory accounting or Firecracker comparisons. Raw reports remain private under
-ignored `runs/`. Writable-root persistence, guest helper access and production
-ownership recovery remain unimplemented and unqualified.
+ignored `runs/`. These diskless measurements do not qualify writable-root persistence, guest helper
+access or production ownership recovery. Separate disk and project paths are
+documented in [persistence](PERSISTENCE.md) and [project](PROJECT.md).
 
 See the [Rust persistent-root experiment](PERSISTENCE.md) for the new bounded disk path.
 

@@ -30,6 +30,16 @@ class SnapshotApiTests(unittest.TestCase):
             self.assertTrue(report["compile_error"])
             self.assertEqual(result.returncode, 2)
 
+    def test_missing_compiler_reports_unavailable(self):
+        output = io.StringIO()
+        with mock.patch.object(probe.subprocess, "run", side_effect=FileNotFoundError), \
+                mock.patch("sys.stdout", output):
+            self.assertEqual(probe.snapshot_api(), 2)
+        report = json.loads(output.getvalue())
+        self.assertFalse(report["api_available"])
+        self.assertFalse(report["guest_boot_tested"])
+        self.assertIn("unavailable", report["compile_error"])
+
     def test_compile_error_redacts_workspace_and_home_paths(self):
         diagnostic = f"{ROOT}/snapshot_api_probe.swift: error near {pathlib.Path.home()}/private"
         completed = subprocess.CompletedProcess(["swiftc"], 1, "", diagnostic)

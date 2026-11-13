@@ -134,8 +134,8 @@ SHA256SUMS 对照，但未验证独立签名。内核保留 Linux/Debian 许可�
 128 MiB 的 30 次独立重复输入输出全部通过（30/30）。从 runner 初始化起计，guest
 就绪中位数为 239.875 ms，最近秩 P95 为 245.762 ms。未清空缓存。这只是固定工作
 负载的无磁盘测量，不是冷缓存、完整 Linux 开发环境、总内存核算或 Firecracker
-对比。原始报告保留在忽略的私有 `runs/`。可写根磁盘持久化、guest helper 和生产
-所有权恢复仍未实现或验收。
+对比。原始报告保留在忽略的私有 `runs/`。这些无磁盘测量不证明可写根磁盘持久化、guest helper 或生产
+所有权恢复。独立路径见[持久化](PERSISTENCE.zh-CN.md)和[项目实验](PROJECT.zh-CN.md)。
 
 新增有界磁盘路径见 [Rust 持久根磁盘实验](PERSISTENCE.zh-CN.md)。
 

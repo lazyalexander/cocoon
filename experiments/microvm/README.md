@@ -111,3 +111,35 @@ The lifecycle case pauses one resident VM five times. After each confirmed pause
 ```sh
 python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/Image --case lifecycle
 ```
+
+## Save/restore configuration check
+
+Run `build/cocoon-vz REQUEST.json --check-save-restore` from this directory
+with an existing experimental request to validate its actual configuration using
+Virtualization.framework. The command creates no VM. Exit zero and `candidate`
+mean configuration support only; `save_restore_tested` remains false. Preserve
+framework errors and distinguish sandbox restrictions from host capability.
+Full persistence still requires real save/restore with matching disk bytes and
+termination of the original VM before a new owner resumes it.
+
+## Cross-process persistence experiment
+
+Run `python3 experiments/microvm/persistence.py --kernel experiments/microvm/build/Image`
+from the repository root after building. The guest uses a memory-only random marker
+and a fixed 512-byte raw-block record: `1P` is flushed before pausing, and `2D`
+is flushed only after restoration reads the prior progress. This is a bounded
+binary persistence fixture, not a filesystem or general artifact API.
+
+The first launcher pauses, saves framework state and confirms VM termination.
+Only after that process exits does the controller copy the disk and start a new
+launcher. The generic machine identifier is persisted alongside the state file.
+The new launcher restores paused, resumes, and verifies the same memory marker
+and continued disk progress without a cold-boot checkpoint message. The original
+disk snapshot must remain unchanged. Each invocation uses a fresh private run.
+
+Machine state is host-bound. This experiment does not implement production
+admission, an atomic complete snapshot bundle, external-effect rollback, arbitrary
+spool execution, concurrent restore exclusion or durable owner-loss reconciliation.
+Failures preserve evidence and do not automatically replay. A framework save alone
+is not artifact acceptance. The initial missing-machine-identifier restore failure
+remains retained privately alongside successful independent attempts.

@@ -47,3 +47,39 @@ fn retries_have_separate_attempt_identity() {
     assert!(!first.may_settle());
     assert!(!second.may_settle());
 }
+
+#[test]
+fn spool_profile_rejects_platform_network_and_unpinned_inputs() {
+    let mut wire = serde_json::json!({
+        "schema": "cocoon-spool-task-v1",
+        "caller": {"subject": "host", "kind": "service"},
+        "release_sha256": "a".repeat(64),
+        "kernel_sha256": "b".repeat(64),
+        "initramfs_sha256": "c".repeat(64),
+        "platform": "linux-arm64", "argv": ["/spool/run"],
+        "limits": {"vcpus": 1, "memory_mib": 256, "writable_mib": 1,
+                   "wall_seconds": 10, "output_bytes": 4096},
+        "network": false
+    });
+    let valid = wire.clone();
+    let check = |v| {
+        serde_json::from_value::<spool::SpoolTask>(v)
+            .unwrap()
+            .validate()
+    };
+    assert!(check(wire.clone()).is_ok());
+    for (key, value) in [
+        ("platform", serde_json::json!("macos-arm64")),
+        ("network", serde_json::json!(true)),
+        ("kernel_sha256", serde_json::json!("latest")),
+        ("argv", serde_json::json!(["/spool/../host"])),
+        ("argv", serde_json::json!([])),
+    ] {
+        wire = valid.clone();
+        wire[key] = value;
+        assert!(check(wire.clone()).is_err());
+    }
+    wire = valid;
+    wire["host_mounts"] = serde_json::json!(["/"]);
+    assert!(serde_json::from_value::<spool::SpoolTask>(wire).is_err());
+}

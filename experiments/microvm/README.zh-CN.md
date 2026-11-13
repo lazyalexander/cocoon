@@ -96,3 +96,27 @@ lifecycle 用例在同一台驻留内存的 VM 上执行五轮暂停和恢复。
 ```sh
 python3 experiments/microvm/probe.py boot --kernel experiments/microvm/build/Image --case lifecycle
 ```
+
+## 保存恢复配置检查
+
+在本目录对已有实验请求运行 `build/cocoon-vz REQUEST.json --check-save-restore`，
+使用 Virtualization.framework 检查实际配置。该命令不创建 VM。
+退出零且状态为 `candidate` 仅表示配置支持，`save_restore_tested` 仍为 false。
+保留框架错误，并区分外层沙箱限制与宿主能力。完整持久恢复仍需真实保存恢复、
+一致的磁盘副本，以及新 owner 继续前对原 VM 的终止确认。
+
+## 跨启动器持久恢复实验
+
+构建后从仓库根目录运行：
+`python3 experiments/microvm/persistence.py --kernel experiments/microvm/build/Image`。
+guest 使用仅在内存中的随机标记，以及固定 512 字节原始磁盘记录：暂停前刷盘 `1P`，
+恢复后核对旧进度，再刷盘 `2D`。这是有界二进制持久化测试，不是文件系统或通用产物接口。
+
+第一个启动器暂停、保存框架状态并确认 VM 终止。控制程序等待启动器退出，复制磁盘，
+再启动新进程。machine identifier 随状态文件持久保存。新启动器恢复至暂停状态后继续，
+核对原内存标记及磁盘进度，拒绝出现冷启动检查点标记，且原保存磁盘摘要必须保持不变。
+每次调用创建新的私有实验目录。
+
+机器状态绑定当前宿主。本实验尚未实现生产准入、完整保存包的原子发布、外部效果回滚、
+任意 spool 执行、并发恢复互斥和持久 owner 失联对账。失败保留证据，不自动重跑。
+框架保存成功不代表产物验收。首次缺失 machine identifier 导致的恢复失败记录仍在本地保留。

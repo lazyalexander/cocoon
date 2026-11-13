@@ -8,6 +8,9 @@ struct Request: Decodable {
     let initrd: String
     let token: String
     let memoryMiB: UInt64
+    let persistence: String?
+    let disk: String?
+    let state: String?
     let lifecycle: Bool?
     let seconds: Double
 }
@@ -129,20 +132,64 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         // Stay halted on panic; negative panic timeouts reboot immediately.
         loader.commandLine = "console=hvc0 rdinit=/init quiet panic=0"
         let config = VZVirtualMachineConfiguration()
+        if let state = req.state, #available(macOS 13.0, *) {
+            do {
+                let platform = VZGenericPlatformConfiguration()
+                let identityURL = URL(fileURLWithPath: state + ".machine-id")
+                if req.persistence == "restore" {
+                    guard let identity = VZGenericMachineIdentifier(dataRepresentation: try Data(contentsOf: identityURL)) else {
+                        throw NSError(domain: "invalid machine identity", code: 1)
+                    }
+                    platform.machineIdentifier = identity
+                } else if !CommandLine.arguments.contains("--check-save-restore") {
+                    try platform.machineIdentifier.dataRepresentation.write(to: identityURL, options: .withoutOverwriting)
+                }
+                config.platform = platform
+            } catch { report["error"] = error.localizedDescription; finish("identity_failed", 2); return }
+        }
         config.bootLoader = loader
         config.cpuCount = 1
         config.memorySize = req.memoryMiB * 1024 * 1024
         let port = VZVirtioConsoleDeviceSerialPortConfiguration()
-        if req.lifecycle == true { input = Pipe() }
+        if req.lifecycle == true || req.persistence != nil { input = Pipe() }
         port.attachment = VZFileHandleSerialPortAttachment(
             fileHandleForReading: input?.fileHandleForReading, fileHandleForWriting: serial.fileHandleForWriting)
         config.serialPorts = [port]
-        // No disk, network, graphics, shared directory, vsock or balloon device.
+        if let disk = req.disk {
+            do {
+                let attachment = try VZDiskImageStorageDeviceAttachment(url: URL(fileURLWithPath: disk), readOnly: false)
+                config.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: attachment)]
+                report["storage_devices"] = 1
+            } catch { report["error"] = error.localizedDescription; finish("disk_failed", 2); return }
+        }
+
         do { try config.validate() } catch {
             let e = error as NSError
             report["error"] = ["domain": e.domain, "code": e.code, "message": e.localizedDescription]
             report["diagnostics"] = hostDiagnostics()
             finish("blocked", 2)
+            return
+        }
+        if CommandLine.arguments.contains("--check-save-restore") {
+            report["schema"] = "cocoon-save-restore-check-v1"
+            report["guest_boot_tested"] = false
+            report["execution_started"] = false
+            report["save_restore_tested"] = false
+            if #available(macOS 14.0, *) {
+                do {
+                    try config.validateSaveRestoreSupport()
+                    report["configuration_supported"] = true
+                    finish("candidate", 0)
+                } catch {
+                    let e = error as NSError
+                    report["configuration_supported"] = false
+                    report["error"] = ["domain": e.domain, "code": e.code, "message": e.localizedDescription]
+                    finish("unsupported", 2)
+                }
+            } else {
+                report["configuration_supported"] = false
+                finish("unsupported_os", 2)
+            }
             return
         }
         guard installSerialReader() else { return }
@@ -158,6 +205,26 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         timer.setEventHandler { self.stop("deadline") }
         deadlineTimer = timer
         timer.resume()
+        if req.persistence == "restore", let state = req.state {
+            if #available(macOS 14.0, *) {
+                machine.restoreMachineStateFrom(url: URL(fileURLWithPath: state)) { error in
+                    guard error == nil, machine.state == .paused else {
+                        self.report["error"] = error?.localizedDescription ?? "restore not paused"
+                        self.finish("restore_failed", 2); return
+                    }
+                    if self.stopping { self.performStop(); return }
+                    self.report["restored_paused"] = true
+                    machine.resume { result in
+                        if self.stopping { self.performStop(); return }
+                        guard case .success = result, machine.state == .running else { self.stop("resume_failed"); return }
+                        self.report["vm_running_ms"] = self.elapsed()
+                        do { try self.input!.fileHandleForWriting.write(contentsOf: Data("R\n".utf8)) }
+                        catch { self.stop("input_failed") }
+                    }
+                }
+            } else { finish("unsupported_os", 2) }
+            return
+        }
         machine.start { result in
             switch result {
             case .success:
@@ -216,6 +283,25 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         if report["guest_ready"] as? Bool != true && text.contains("COCOON_READY:" + req.token + "\n") {
             report["guest_ready"] = true
             report["guest_ready_ms"] = elapsed()
+        }
+        if req.persistence == "save", !cycling,
+           text.contains("COCOON_CHECKPOINT:"), text.hasSuffix("\n"),
+           let machine = vm, let state = req.state {
+            cycling = true
+            machine.pause { result in
+                if self.stopping { self.performStop(); return }
+                guard case .success = result, machine.state == .paused else { self.stop("pause_failed"); return }
+                self.report["paused_ms"] = self.elapsed()
+                if #available(macOS 14.0, *) {
+                    machine.saveMachineStateTo(url: URL(fileURLWithPath: state)) { error in
+                        if self.stopping { self.performStop(); return }
+                        if let error = error { self.report["error"] = error.localizedDescription; self.stop("save_failed"); return }
+                        self.report["saved"] = true
+                        self.stop("saved")
+                    }
+                } else { self.stop("unsupported_os") }
+            }
+            return
         }
         if req.lifecycle == true {
             if let offset = responseOffset {
@@ -283,7 +369,7 @@ do {
         runner.report["guest_boot_tested"] = false
         runner.finish("diagnostic_only", VZVirtualMachine.isSupported ? 0 : 2)
     }
-    guard CommandLine.arguments.count == 2 else { throw NSError(domain: "usage: cocoon-vz REQUEST.json", code: 1) }
+    guard CommandLine.arguments.count == 2 || (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--check-save-restore") else { throw NSError(domain: "usage: cocoon-vz REQUEST.json", code: 1) }
     let url = URL(fileURLWithPath: CommandLine.arguments[1])
     let handle = try FileHandle(forReadingFrom: url)
     let data = try handle.read(upToCount: 16385) ?? Data()
@@ -291,13 +377,28 @@ do {
     guard data.count <= 16384 else { throw NSError(domain: "request too large", code: 1) }
     let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     let allowed = Set(["kernel", "initrd", "token", "memoryMiB", "seconds"])
-    guard let fields = fields, (Set(fields.keys) == allowed || Set(fields.keys) == allowed.union(["lifecycle"])) else {
+    guard let fields = fields, (Set(fields.keys) == allowed || Set(fields.keys) == allowed.union(["lifecycle"]) || Set(fields.keys) == allowed.union(["persistence", "disk", "state"])) else {
         throw NSError(domain: "unknown or missing request fields", code: 1)
     }
     let req = try JSONDecoder().decode(Request.self, from: data)
     guard req.token.count == 32, req.token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
           (128...4096).contains(req.memoryMiB), (1...60).contains(req.seconds) else {
         throw NSError(domain: "invalid experimental request", code: 1)
+    }
+    if fields.keys.contains("persistence") {
+        guard req.persistence != nil, let disk = req.disk, let state = req.state,
+              !disk.isEmpty, !state.isEmpty,
+              URL(fileURLWithPath: disk).standardizedFileURL != URL(fileURLWithPath: state).standardizedFileURL else {
+            throw NSError(domain: "incomplete or aliased persistence paths", code: 1)
+        }
+    }
+    if let mode = req.persistence {
+        guard ["save", "restore"].contains(mode), req.disk != nil, req.state != nil else {
+            throw NSError(domain: "invalid persistence request", code: 1)
+        }
+        if mode == "save" && FileManager.default.fileExists(atPath: req.state!) {
+            throw NSError(domain: "save destination already exists", code: 1)
+        }
     }
     runner.queue.async { runner.begin(req) }
     dispatchMain()

@@ -31,6 +31,35 @@ class RunnerProtocolTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.request(json.dumps({**base, **change}).encode())
 
+    def test_preflight_does_not_create_machine_identity(self):
+        with tempfile.TemporaryDirectory(prefix="cocoon-preflight-") as directory:
+            root = pathlib.Path(directory)
+            state = root / "state"
+            disk = root / "disk"
+            disk.write_bytes(bytes(4096))
+            request = root / "request.json"
+            request.write_text(json.dumps({"kernel": "/unused-kernel", "initrd": "/unused-initrd",
+                "token": "a" * 32, "memoryMiB": 128, "seconds": 1,
+                "persistence": "save", "disk": str(disk), "state": str(state)}))
+            result = subprocess.run([str(BINARY), str(request), "--check-save-restore"],
+                                    capture_output=True, timeout=10)
+            report = json.loads(result.stdout)
+            self.assertNotIn("start_requested_ms", report)
+            self.assertFalse(state.exists())
+            self.assertFalse(pathlib.Path(str(state) + ".machine-id").exists())
+            self.assertEqual(disk.read_bytes(), bytes(4096))
+
+    def test_incomplete_persistence_refuses_before_vm_start(self):
+        base = {"kernel": "/unused-kernel", "initrd": "/unused-initrd",
+                "token": "a" * 32, "memoryMiB": 128, "seconds": 1}
+        for fields in [
+            {"persistence": None, "disk": "/disk", "state": "/state"},
+            {"persistence": "save", "disk": None, "state": "/state"},
+            {"persistence": "save", "disk": "/same", "state": "/same"},
+            {"persistence": "restore", "disk": "", "state": "/state"},
+        ]:
+            self.request(json.dumps({**base, **fields}).encode())
+
     def test_malformed_missing_and_oversized_requests_refuse(self):
         for raw in [b"[]", b"{}", b"not-json", b" " * 16385]:
             with self.subTest(length=len(raw)):

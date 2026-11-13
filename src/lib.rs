@@ -1,6 +1,7 @@
 //! Proposed execution contracts. Validation never grants execution authority.
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+pub mod spool;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

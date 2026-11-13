@@ -59,3 +59,17 @@ GPU、GUI guest、实时内存快照及其他宿主平台不属于首阶段交�
 
 Cocoon 原创源码与文档采用 [MIT 协议](LICENSE)。用户提供的 Linux 内核和
 第三方依赖保留各自协议，不会因使用 Cocoon 而变更协议。
+
+## Spool 后端接入
+
+`cocoon plan-spool TASK.json` 校验独立的 `cocoon-spool-task-v1` 配置：
+caller、release_sha256、kernel_sha256、initramfs_sha256、platform
+（`linux-arm64`）、argv、limits 和 network（`false`）。摘要为 64 位十六进制，
+可执行文件使用 guest 内的绝对路径，资源范围沿用原配置。
+此命令不加载或核实引用内容，不授予执行权限，也不启动 VM。
+原 OCI 提案继续通过 `plan` 保持兼容。
+
+预期调用方为宿主 ExecutionBackend 适配器。宿主管准入、披露和产物验收；
+Cocoon 管执行环境和可信终止观测。不能将 macOS 原生二进制直接作为 Linux
+负载传入。下一步验收需要真实离线 spool、输入内容核验、有界输出传输、取消
+及所有者失联对账。现有固定 microVM 实验不能证明此配置已具备执行能力。

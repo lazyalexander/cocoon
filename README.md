@@ -63,3 +63,19 @@ outside the first delivery scope.
 Cocoon's original source and documentation are licensed under the
 [MIT License](LICENSE). Operator-supplied Linux kernels and third-party
 dependencies retain their own licenses; they are not relicensed by Cocoon.
+
+## Spool backend integration
+
+`cocoon plan-spool TASK.json` validates the separate `cocoon-spool-task-v1`
+profile: caller, release_sha256, kernel_sha256, initramfs_sha256, platform
+(`linux-arm64`), argv, limits and network (`false`). Digests are 64 hexadecimal
+characters. The executable is an absolute guest path. Limits retain the original
+profile bounds. This does not load or verify the referenced bytes, grant execution,
+or start a VM. The OCI proposal remains compatible through `plan`.
+
+The intended caller is the host ExecutionBackend adapter. The host owns admission,
+disclosure and artifact acceptance; Cocoon owns the execution environment and
+trusted termination observations. Native macOS binaries cannot be passed through
+as Linux workloads. The next acceptance requires a real offline spool, verified
+input bytes, bounded output transfer, cancellation and owner-loss reconciliation.
+The existing fixed microVM probe does not qualify this profile.

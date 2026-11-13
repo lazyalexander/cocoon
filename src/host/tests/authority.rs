@@ -83,6 +83,13 @@ fn wal_is_ordered_persistent_and_tamper_evident() {
 fn production_spawn_failure_requires_explicit_recovery_without_replay() {
     let sandbox = Sandbox::new();
     let manager = Manager::open(&sandbox.0).unwrap();
+    // Exercise launch authority independently of host memory pressure and platform.
+    manager
+        .set_protection_policy(cocoon_host::ProtectionPolicy {
+            enabled: false,
+            ..Default::default()
+        })
+        .unwrap();
     let input = sandbox.0.join("linux");
     let mut bytes = [0_u8; 64];
     bytes[56..60].copy_from_slice(b"ARM\x64");
@@ -227,6 +234,13 @@ fn work_request(caller: &str, grant: &str, operation: HostOperation) -> HostRequ
 fn work_grants_reject_missing_wrong_expired_revoked_stale_and_wider_uses() {
     let sandbox = Sandbox::new();
     let manager = Manager::open(&sandbox.0).unwrap();
+    // Exercise launch authority independently of host memory pressure and platform.
+    manager
+        .set_protection_policy(cocoon_host::ProtectionPolicy {
+            enabled: false,
+            ..Default::default()
+        })
+        .unwrap();
     let image = sandbox.fixture(&manager);
     let vm = VmId::from(Uuid::new_v4());
     let other = VmId::from(Uuid::new_v4());
@@ -420,6 +434,13 @@ fn work_grants_reject_missing_wrong_expired_revoked_stale_and_wider_uses() {
 fn repeated_start_uses_the_saved_outcome_and_rejects_parameter_changes() {
     let sandbox = Sandbox::new();
     let manager = Manager::open(&sandbox.0).unwrap();
+    // Exercise launch authority independently of host memory pressure and platform.
+    manager
+        .set_protection_policy(cocoon_host::ProtectionPolicy {
+            enabled: false,
+            ..Default::default()
+        })
+        .unwrap();
     let image = sandbox.fixture(&manager);
     let first = VmId::from(Uuid::new_v4());
     let second = VmId::from(Uuid::new_v4());

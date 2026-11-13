@@ -39,3 +39,5 @@ jobs:
         run: tools/build runner
       - name: Check protocol without booting a guest
         run: python3 experiments/microvm/runner_checks.py target/cocoon-vz/cocoon-vz
+      - name: Check snapshot cancellation callbacks without booting a guest
+        run: python3 -m unittest discover -s experiments/microvm -p 'test_snapshot_cancellation.py' -v

@@ -20,16 +20,19 @@ use uuid::Uuid;
 mod api;
 mod disk;
 mod error;
+mod grants;
 mod journal;
 mod lifecycle;
 pub mod persistence;
 mod project;
 mod protection;
+mod store;
 mod types;
 mod versions;
 pub use api::{HostOperation, HostRequest, HostResponse};
 use disk::{copy_new, hash, sync_directory};
 pub use error::{Error, Result};
+pub use grants::WorkAction;
 pub use journal::JournalEntry;
 pub use lifecycle::ExecutionRecord;
 pub use protection::ProtectionPolicy;
@@ -38,8 +41,17 @@ pub use types::*;
 /// isolation from arbitrary code running under the same macOS user.
 pub struct Manager {
     root: PathBuf,
-    db: Connection,
+    database: Mutex<Connection>,
     children: Arc<Mutex<HashMap<AttemptId, Child>>>,
+    /// When set, work-lane handlers wait until the hold is released.
+    pub(crate) work_hold: Mutex<Option<Arc<WorkHold>>>,
+}
+
+pub(crate) struct WorkHold {
+    pub(crate) entered: Mutex<bool>,
+    pub(crate) entered_cv: std::sync::Condvar,
+    pub(crate) release: Mutex<bool>,
+    pub(crate) release_cv: std::sync::Condvar,
 }
 impl Manager {
     pub fn open(root: &Path) -> Result<Self> {
@@ -66,39 +78,59 @@ impl Manager {
                 return Err("unsafe state subdirectory".into());
             }
         }
-        let db = Connection::open(root.join("state.sqlite3"))?;
-        let version: u32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 2 {
-            return Err("unsupported database schema version".into());
-        }
-        db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN IMMEDIATE;
-            CREATE TABLE IF NOT EXISTS images(id TEXT PRIMARY KEY, manifest TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS vms(id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS boots(id TEXT PRIMARY KEY, vm TEXT NOT NULL, status TEXT NOT NULL, report TEXT);
-            CREATE TABLE IF NOT EXISTS journal(sequence INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, vm TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, previous_sha256 TEXT NOT NULL, sha256 TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS executions(attempt TEXT PRIMARY KEY, vm TEXT NOT NULL, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS rollback_intents(vm TEXT PRIMARY KEY, image TEXT NOT NULL, disk_copy TEXT);
-            PRAGMA user_version=2; COMMIT;")?;
-        db.execute("UPDATE images SET manifest=json_set(manifest,'$.approved',json('true')) WHERE json_extract(manifest,'$.approved') IS NULL", [])?;
+        let db = store::open(root)?;
         Ok(Self {
             root: root.to_owned(),
-            db,
+            database: Mutex::new(db),
             children: Arc::new(Mutex::new(HashMap::new())),
+            work_hold: Mutex::new(None),
         })
     }
+
+    pub(crate) fn db(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.database
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) fn wait_work_hold(&self) {
+        let Some(hold) = self
+            .work_hold
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        else {
+            return;
+        };
+        {
+            let mut entered = hold
+                .entered
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *entered = true;
+            hold.entered_cv.notify_all();
+        }
+        let mut release = hold
+            .release
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*release {
+            release = hold
+                .release_cv
+                .wait(release)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
     fn begin(&self, id: OperationId, kind: &str, target: impl std::fmt::Display) -> Result<()> {
-        self.db.execute(
+        self.db().execute(
             "INSERT INTO operations VALUES (?1,?2,?3,'pending')",
             params![id.to_string(), kind, target.to_string()],
         )?;
         Ok(())
     }
     pub fn operations(&self) -> Result<Vec<serde_json::Value>> {
-        let mut stmt = self
-            .db
-            .prepare("SELECT id,kind,target,status FROM operations ORDER BY rowid")?;
+        let db = self.db();
+        let mut stmt = db.prepare("SELECT id,kind,target,status FROM operations ORDER BY rowid")?;
         let rows = stmt.query_map([], |r| Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"target":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?})))?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
@@ -154,7 +186,8 @@ impl Manager {
         }
         sync_directory(&dir)?;
         sync_directory(&self.root.join("images"))?;
-        let tx = self.db.unchecked_transaction()?;
+        let db = self.db();
+        let tx = db.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO images VALUES (?1,?2)",
             params![id.to_string(), manifest.to_string()],
@@ -167,7 +200,7 @@ impl Manager {
         Ok(id)
     }
     pub fn image(&self, id: ImageId) -> Result<serde_json::Value> {
-        let record: String = self.db.query_row(
+        let record: String = self.db().query_row(
             "SELECT manifest FROM images WHERE id=?1",
             [id.to_string()],
             |r| r.get(0),
@@ -195,7 +228,7 @@ impl Manager {
             return Err("invalid owner".into());
         }
         let existing: Option<String> = self
-            .db
+            .db()
             .query_row(
                 "SELECT record FROM vms WHERE id=?1",
                 [id.to_string()],
@@ -244,7 +277,8 @@ impl Manager {
         };
         sync_directory(&dir)?;
         sync_directory(&self.root.join("vms"))?;
-        let tx = self.db.unchecked_transaction()?;
+        let db = self.db();
+        let tx = db.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO vms VALUES (?1,?2)",
             params![vm.id.to_string(), serde_json::to_string(&vm)?],
@@ -257,7 +291,7 @@ impl Manager {
         Ok(vm)
     }
     pub fn get(&self, id: VmId) -> Result<Vm> {
-        let record: String = self.db.query_row(
+        let record: String = self.db().query_row(
             "SELECT record FROM vms WHERE id=?1",
             [id.to_string()],
             |r| r.get(0),
@@ -265,7 +299,8 @@ impl Manager {
         Ok(serde_json::from_str(&record)?)
     }
     pub fn list(&self) -> Result<Vec<Vm>> {
-        let mut stmt = self.db.prepare("SELECT record FROM vms ORDER BY id")?;
+        let db = self.db();
+        let mut stmt = db.prepare("SELECT record FROM vms ORDER BY id")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }

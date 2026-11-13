@@ -4,3 +4,5 @@
 /experiments/microvm/build/
 /experiments/microvm/runs/
 __pycache__/
+/docs/superpowers/
+/benchmarks/runs/

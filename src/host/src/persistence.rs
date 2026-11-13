@@ -100,7 +100,8 @@ impl Manager {
         if &header[56..60] != b"ARM\x64" {
             return Err("not a Linux ARM64 kernel".into());
         }
-        let tx = self.db.unchecked_transaction()?;
+        let db = self.db();
+        let tx = db.unchecked_transaction()?;
         // Persist uncertainty before spawning; any early return keeps reuse blocked.
         vm.state = VmState::Unknown;
         tx.execute(
@@ -208,7 +209,8 @@ impl Manager {
         let report = serde_json::json!({"schema":if mode == "project" { "cocoon-project-v1" } else { "cocoon-persistence-v1" },"vm":id,"boot":boot,"mode":mode,
             "runner_sha256":runner_hash,"passed":passed,"termination_confirmed":terminated,
             "project_verified":project_verified,"artifact":artifact,"root_verified":root,"payload_verified":persisted,"timed_out":timed_out,"runner":observed});
-        let tx = self.db.unchecked_transaction()?;
+        let db = self.db();
+        let tx = db.unchecked_transaction()?;
         tx.execute(
             "UPDATE vms SET record=?1 WHERE id=?2",
             params![serde_json::to_string(&vm)?, id.to_string()],

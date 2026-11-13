@@ -1,0 +1,25 @@
+#!/bin/sh
+# One build entry point. CI gates stay deterministic; real VM benchmarks are separate.
+set -eu
+cd "$(dirname "$0")/.."
+case "${1:-}" in
+  check)
+    cargo check --workspace --locked
+    ;;
+  release)
+    cargo build --workspace --locked --release
+    ;;
+  guest)
+    cargo build --locked --release --target aarch64-unknown-linux-musl -p cocoon-guest-fixture -p cocoon-guest-helper
+    ;;
+  runner)
+    mkdir -p target/cocoon-vz
+    cat experiments/microvm/runner.swift experiments/microvm/ProjectChannel.swift experiments/microvm/ControlChannel.swift > target/cocoon-vz/main.swift
+    /usr/bin/swiftc -swift-version 5 -O -module-cache-path target/cocoon-vz/modules target/cocoon-vz/main.swift -o target/cocoon-vz/cocoon-vz -framework Virtualization
+    /usr/bin/codesign --force --sign - --entitlements experiments/macos-preflight/entitlements.plist target/cocoon-vz/cocoon-vz
+    ;;
+  *)
+    echo 'usage: tools/build check|release|guest|runner' >&2
+    exit 2
+    ;;
+esac

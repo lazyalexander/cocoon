@@ -1,6 +1,10 @@
 name: Contract checks
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
+
+concurrency:
+  group: cocoon-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -31,11 +35,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Build native runner
-        run: |
-          cat experiments/microvm/runner.swift experiments/microvm/ProjectChannel.swift > /tmp/cocoon-main.swift
-          swiftc -swift-version 5 -O /tmp/cocoon-main.swift -o /tmp/cocoon-vz -framework Virtualization
-      - name: Sign experimental runner
-        run: codesign --force --sign - --entitlements experiments/macos-preflight/entitlements.plist /tmp/cocoon-vz
+      - name: Build and sign native runner
+        run: tools/build runner
       - name: Check protocol without booting a guest
-        run: python3 experiments/microvm/runner_checks.py /tmp/cocoon-vz
+        run: python3 experiments/microvm/runner_checks.py target/cocoon-vz/cocoon-vz

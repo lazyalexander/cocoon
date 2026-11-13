@@ -124,7 +124,7 @@ fn retained_exit_is_recoverable(execution: &ExecutionRecord) -> bool {
 
 impl Manager {
     fn execution(&self, attempt: AttemptId) -> Result<ExecutionRecord> {
-        let record: String = self.db.query_row(
+        let record: String = self.db().query_row(
             "SELECT record FROM executions WHERE attempt=?1",
             [attempt.to_string()],
             |row| row.get(0),
@@ -133,7 +133,7 @@ impl Manager {
     }
 
     fn save_execution(&self, record: &ExecutionRecord) -> Result<()> {
-        self.db.execute(
+        self.db().execute(
             "UPDATE executions SET record=?1 WHERE attempt=?2",
             params![serde_json::to_string(record)?, record.attempt.to_string()],
         )?;
@@ -141,7 +141,8 @@ impl Manager {
     }
 
     pub(crate) fn save_vm(&self, vm: &mut crate::Vm) -> Result<()> {
-        let tx = self.db.unchecked_transaction()?;
+        let db = self.db();
+        let tx = db.unchecked_transaction()?;
         let current_record: String = tx.query_row(
             "SELECT record FROM vms WHERE id=?1",
             [vm.id.to_string()],
@@ -247,7 +248,7 @@ impl Manager {
                 "starting".into()
             },
         };
-        self.db.execute(
+        self.db().execute(
             "INSERT INTO executions VALUES (?1,?2,?3)",
             params![
                 execution.attempt.to_string(),
@@ -683,6 +684,13 @@ impl Manager {
         if response.identity != request.identity {
             return Err("guest response identity mismatch".into());
         }
+        let vm = self.get(vm_id)?;
+        if vm.state != VmState::Running
+            || vm.active_attempt != Some(attempt)
+            || vm.generation != request.identity.generation
+        {
+            return Err("stale or unauthorized guest request".into());
+        }
         Ok(response)
     }
 
@@ -691,6 +699,7 @@ impl Manager {
         request: cocoon_guest_wire::Request,
         guest_path: &str,
         name: &str,
+        max_bytes: u64,
     ) -> Result<serde_json::Value> {
         if name.is_empty()
             || name.len() > 128
@@ -775,8 +784,8 @@ impl Manager {
                 if next_offset != offset + bytes.len() as u64 || (!eof && bytes.is_empty()) {
                     return Err("invalid artifact chunk progression".into());
                 }
-                if offset + bytes.len() as u64 > 64 * 1024 * 1024 {
-                    return Err("artifact exceeds 64 MiB".into());
+                if offset + bytes.len() as u64 > max_bytes.min(64 * 1024 * 1024) {
+                    return Err("artifact exceeds the authorized export limit".into());
                 }
                 std::io::Write::write_all(&mut output, &bytes)?;
                 offset = next_offset;

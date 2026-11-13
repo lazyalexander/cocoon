@@ -14,19 +14,19 @@ impl Manager {
         let previous = dir.join("root.rollback-old");
         if previous.exists() {
             let original: Option<(String, Option<String>)> = self
-                .db
+                .db()
                 .query_row(
                     "SELECT image,disk_copy FROM rollback_intents WHERE vm=?1",
                     [id.to_string()],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            let status: Option<String> = self.db.query_row(
+            let status: Option<String> = self.db().query_row(
                 "SELECT status FROM operations WHERE kind='rollback' AND target=?1 ORDER BY rowid DESC LIMIT 1",
                 [id.to_string()], |row| row.get(0)).optional()?;
             if status.as_deref() == Some("complete") {
                 fs::remove_file(previous)?;
-                self.db
+                self.db()
                     .execute("DELETE FROM rollback_intents WHERE vm=?1", [id.to_string()])?;
                 sync_directory(&dir)?;
                 return Ok(());
@@ -49,7 +49,7 @@ impl Manager {
             vm.active_lease = None;
             vm.suspend_state = None;
             self.save_vm(&mut vm)?;
-            self.db
+            self.db()
                 .execute("DELETE FROM rollback_intents WHERE vm=?1", [id.to_string()])?;
             return Err(
                 "interrupted rollback restored the previous disk and metadata; recovery approval is required"
@@ -111,7 +111,7 @@ impl Manager {
             serde_json::json!({"candidate": id}),
         )?;
         manifest["approved"] = true.into();
-        self.db.execute(
+        self.db().execute(
             "UPDATE images SET manifest=?1 WHERE id=?2",
             rusqlite::params![manifest.to_string(), id.to_string()],
         )?;
@@ -141,7 +141,7 @@ impl Manager {
         )?;
         let operation = OperationId::from(Uuid::new_v4());
         self.begin(operation, "rollback", id)?;
-        self.db.execute(
+        self.db().execute(
             "INSERT INTO rollback_intents VALUES (?1,?2,?3)",
             rusqlite::params![
                 id.to_string(),
@@ -171,11 +171,11 @@ impl Manager {
         vm.active_lease = None;
         vm.suspend_state = None;
         self.save_vm(&mut vm)?;
-        self.db.execute(
+        self.db().execute(
             "UPDATE operations SET status='complete' WHERE id=?1",
             [operation.to_string()],
         )?;
-        self.db
+        self.db()
             .execute("DELETE FROM rollback_intents WHERE vm=?1", [id.to_string()])?;
         fs::remove_file(previous)?;
         self.append_journal(

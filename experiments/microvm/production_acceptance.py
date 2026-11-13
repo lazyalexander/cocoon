@@ -60,10 +60,16 @@ def main():
     authority = None
     branch = None
 
+    tokens = {}
+
     def api(operation):
+        grant = ""
+        if operation.get("operation") in {"guest", "show", "export", "stop"}:
+            target = operation.get("vm") or operation["request"]["identity"]["vm"]
+            grant = tokens[target]
         request_path = state / (uuid.uuid4().hex + ".json")
         request_path.write_text(json.dumps({"request": str(uuid.uuid4()), "caller": "agent",
-                                            "credential": "", "operation": operation}))
+                                            "credential": "", "grant": grant, "operation": operation}))
         result = subprocess.run([str(cli), "host", str(state), "api", str(request_path)],
                                 capture_output=True, timeout=120)
         if result.returncode:
@@ -81,6 +87,12 @@ def main():
     def identity():
         return identity_for(vm, authority)
 
+    def refresh(target):
+        issued = api({"operation": "issue_grant", "subject": "agent", "vm": target,
+                      "actions": ["inspect", "guest", "export", "stop"],
+                      "expires_unix": int(time.time()) + 3600, "max_export_bytes": 1048576})
+        tokens[target] = issued["token"]
+
     def guest_status():
         response = api({"operation": "guest", "request": {"identity": identity(),
             "operation": {"kind": "status"}}})
@@ -92,6 +104,7 @@ def main():
 
     try:
         authority = api({"operation": "start", "vm": vm})
+        refresh(vm)
         expected = bytes((index * 31) % 256 for index in range(12000))
         for offset in range(0, len(expected), 4000):
             chunk = expected[offset:offset + 4000]
@@ -121,9 +134,11 @@ def main():
             recovery = api({"operation": "show", "vm": vm})
             assert recovery["state"] == "recovery_required" and recovery["active_lease"] is None
             authority = api({"operation": "recover_cold", "vm": vm})
+            refresh(vm)
             assert authority["generation"] == first_generation + 2
         else:
             authority = api({"operation": "resume", "vm": vm})
+            refresh(vm)
             assert authority["generation"] == first_generation + 1
         assert authority["attempt"]["id"] != first_attempt
         recovered_nonce = guest_status()
@@ -150,6 +165,7 @@ def main():
             api({"operation": "set_protection", "policy": {"enabled": True,
                 "minimum_free_percent": 1, "emergency_stop": True, "max_suspend_per_pass": 1}})
             authority = api({"operation": "resume", "vm": vm})
+            refresh(vm)
             assert guest_status() == automatic_nonce and "vm_resumed" in runner_events(authority)
         artifact = api({"operation": "export", "request": {"identity": identity(), "operation": {
             "kind": "read", "path": "/workspace/data.bin"}},
@@ -165,6 +181,7 @@ def main():
         branch = str(uuid.uuid4())
         api({"operation": "branch", "source": candidate, "vm": branch, "owner": "production-acceptance"})
         branch_authority = api({"operation": "start", "vm": branch})
+        refresh(branch)
         branch_result = api({"operation": "guest", "request": {
             "identity": identity_for(branch, branch_authority),
             "operation": {"kind": "exec", "argv": ["/bin/sh", "-c",
@@ -173,6 +190,7 @@ def main():
         api({"operation": "stop", "vm": branch})
         api({"operation": "rollback", "vm": vm, "baseline": image})
         rollback_authority = api({"operation": "start", "vm": vm})
+        refresh(vm)
         rolled_back = api({"operation": "guest", "request": {"identity": identity_for(vm, rollback_authority),
             "operation": {"kind": "exec", "argv": ["/bin/sh", "-c",
                 "test ! -e data.bin && printf ROLLBACK_PASS"], "cwd": "/workspace"}}})
@@ -192,8 +210,11 @@ def main():
                 current = api({"operation": "show", "vm": target})
                 if current["state"] not in ["prepared", "stopped", "suspended", "recovery_required"]:
                     api({"operation": "emergency_stop", "vm": target})
-            except BaseException as cleanup_error:
-                cleanup_errors.append(str(cleanup_error))
+            except BaseException:
+                try:
+                    api({"operation": "emergency_stop", "vm": target})
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(str(cleanup_error))
         (state / "failure.txt").write_text(str(error) + "\n" + "\n".join(cleanup_errors) + "\n")
         raise
     finally:

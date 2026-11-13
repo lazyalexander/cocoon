@@ -53,7 +53,8 @@ impl Manager {
             return Err("invalid journal entry".into());
         }
         let generation = self.get(vm)?.generation;
-        let tx = self.db.unchecked_transaction()?;
+        let db = self.db();
+        let tx = db.unchecked_transaction()?;
         let previous = tx
             .query_row(
                 "SELECT sequence,sha256 FROM journal ORDER BY sequence DESC LIMIT 1",
@@ -98,7 +99,8 @@ impl Manager {
     }
 
     pub fn journal(&self) -> Result<Vec<JournalEntry>> {
-        let mut stmt = self.db.prepare(
+        let db = self.db();
+        let mut stmt = db.prepare(
             "SELECT sequence,id,vm,generation,kind,payload,previous_sha256,sha256 FROM journal ORDER BY sequence",
         )?;
         let rows = stmt.query_map([], |row| {

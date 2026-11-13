@@ -70,6 +70,7 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         ["vm", "stop", id] => { manager.stop(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
         ["vm", "emergency-stop", id] => { manager.emergency_stop(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
         ["vm", "reconcile", id] => serde_json::to_value(manager.reconcile(Uuid::parse_str(id)?.into())?)?,
+        ["vm", "reconcile-report", id] => manager.reconcile_report(Uuid::parse_str(id)?.into())?,
         ["vm", "reclaim", id] => { manager.reclaim(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
         ["vm", "reclaim-status", id] => serde_json::to_value(manager.reclaim_status(Uuid::parse_str(id)?.into())?)?,
         ["vm", "reconcile-reclaim", id] => { manager.reconcile_reclaim(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
@@ -79,7 +80,7 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             serde_json::to_value(manager.call_api(request)?)?
         }
         ["operations"] => serde_json::to_value(manager.operations()?)?,
-        _ => return Err("unknown host command; supported: image import/show, vm create/list/show/start/stop/emergency-stop/reconcile/reclaim/reclaim-status/reconcile-reclaim, operations".into()),
+        _ => return Err("unknown host command; supported: image import/show, vm create/list/show/start/stop/emergency-stop/reconcile/reconcile-report/reclaim/reclaim-status/reconcile-reclaim, operations".into()),
     };
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())

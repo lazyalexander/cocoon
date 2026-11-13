@@ -43,6 +43,9 @@ pub enum HostOperation {
     Reconcile {
         vm: VmId,
     },
+    ReconcileReport {
+        vm: VmId,
+    },
     Reclaim {
         vm: VmId,
     },
@@ -251,6 +254,7 @@ impl Manager {
                 self.agent_context(vm, &request.caller, grant)
             }
             HostOperation::Reconcile { vm } => Ok(serde_json::to_value(self.reconcile(vm)?)?),
+            HostOperation::ReconcileReport { vm } => self.reconcile_report(vm),
             HostOperation::Reclaim { vm } => {
                 self.reclaim(vm)?;
                 Ok(serde_json::Value::Null)
@@ -530,6 +534,7 @@ fn operation_vm(operation: &HostOperation) -> Result<VmId> {
         | HostOperation::Stop { vm }
         | HostOperation::Start { vm }
         | HostOperation::Reclaim { vm }
+        | HostOperation::ReconcileReport { vm }
         | HostOperation::ReclaimStatus { vm }
         | HostOperation::ReconcileReclaim { vm }
         | HostOperation::EmergencyStop { vm }

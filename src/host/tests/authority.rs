@@ -49,6 +49,38 @@ fn authority_keeps_vm_identity_and_revokes_old_attempts() {
 }
 
 #[test]
+fn operator_reconcile_report_is_read_only_and_private() {
+    let sandbox = Sandbox::new();
+    let manager = Manager::open(&sandbox.0).unwrap();
+    let image = sandbox.fixture(&manager);
+    let vm = VmId::from(Uuid::new_v4());
+    manager
+        .create(vm, image, "owner", FinishPolicy::Retain)
+        .unwrap();
+    let report = manager.reconcile_report(vm).unwrap();
+    assert_eq!(report["schema"], "cocoon-reconcile-report-v1");
+    assert_eq!(report["state"], "prepared");
+    assert_eq!(report["next_action"], "none");
+    assert!(
+        !report
+            .to_string()
+            .contains(&sandbox.0.to_string_lossy().into_owned())
+    );
+    let denied = manager.handle_api(
+        HostRequest {
+            request: RequestId::from(Uuid::new_v4()),
+            caller: "agent".into(),
+            credential: String::new(),
+            grant: "0".repeat(64),
+            operation: HostOperation::ReconcileReport { vm },
+        },
+        Path::new("/unused-runner"),
+    );
+    assert!(denied.result.is_err());
+    assert_eq!(manager.get(vm).unwrap().state, VmState::Prepared);
+}
+
+#[test]
 fn wal_is_ordered_persistent_and_tamper_evident() {
     let sandbox = Sandbox::new();
     let manager = Manager::open(&sandbox.0).unwrap();

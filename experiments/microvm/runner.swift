@@ -265,6 +265,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             }
             report["snapshot_restore_claimed"] = true
             machine.restoreMachineStateFrom(url: URL(fileURLWithPath: path)) { error in
+                guard self.continueSnapshotCallback() else { return }
                 guard error == nil else {
                     self.report["snapshot_error"] = error!.localizedDescription
                     self.finish("snapshot_restore_failed", 2)
@@ -273,6 +274,7 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
                 self.report["snapshot_restored"] = true
                 self.report["snapshot_restore_ms"] = self.elapsed()
                 machine.resume { result in
+                    guard self.continueSnapshotCallback() else { return }
                     switch result {
                     case .success:
                         self.report["vm_running_ms"] = self.elapsed()
@@ -335,6 +337,17 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
         }
     }
 
+    // All callbacks run on the VM queue. Cancellation owns the next transition;
+    // a completed framework operation cannot authorize another save or resume.
+    func continueSnapshotCallback() -> Bool {
+        guard !finished else { return false }
+        if stopping {
+            performStop()
+            return false
+        }
+        return true
+    }
+
     func requestSnapshot() {
         guard !stopping && !finished && report["snapshot_save_requested"] as? Bool != true else { return }
         report["snapshot_save_requested"] = true
@@ -354,12 +367,14 @@ final class Runner: NSObject, VZVirtualMachineDelegate {
             return
         }
         machine.pause { result in
+            guard self.continueSnapshotCallback() else { return }
             switch result {
             case .failure(let error):
                 self.report["snapshot_error"] = error.localizedDescription
                 self.stop("snapshot_save_failed")
             case .success:
                 machine.saveMachineStateTo(url: url) { error in
+                    guard self.continueSnapshotCallback() else { return }
                     guard error == nil else {
                         self.report["snapshot_error"] = error!.localizedDescription
                         self.stop("snapshot_save_failed")

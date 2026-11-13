@@ -66,6 +66,6 @@ A work grant with `inspect` may call `context` for its VM. The versioned result
 contains current VM state, active attempt and generation, configured CPU/memory
 and network state, permitted work actions, export limit and grant expiry. It
 contains no host paths, management credential or grant token. The primary caller
-owns the host request identity. Small agents may run inside its VM and share its
-guest permissions; they do not receive independent host lifecycle authority.
+owns the host request identity. The current integration uses one primary agent, without routing/worker agent
+roles or model-driven child agents. Guest programs are tools, not additional agents.
 A guest observation cannot enlarge the grant.

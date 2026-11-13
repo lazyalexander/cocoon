@@ -260,10 +260,14 @@ def benchmark(args):
 
 
 def snapshot_api():
-    result = subprocess.run(
-        ["/usr/bin/swiftc", "-swift-version", "5", "-typecheck",
-         str(ROOT / "snapshot_api_probe.swift"), "-framework", "Virtualization"],
-        capture_output=True, text=True, timeout=60)
+    try:
+        result = subprocess.run(
+            ["/usr/bin/swiftc", "-swift-version", "5", "-typecheck",
+             str(ROOT / "snapshot_api_probe.swift"), "-framework", "Virtualization"],
+            capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        result = subprocess.CompletedProcess(
+            ["swiftc"], 2, "", "Swift compiler is unavailable on this host")
     diagnostic = result.stderr.replace(str(ROOT), "<workspace>").replace(str(pathlib.Path.home()), "<home>")
     report = {"schema": "cocoon-snapshot-api-probe-v1",
               "api_available": result.returncode == 0,

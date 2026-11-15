@@ -109,6 +109,10 @@ def main():
     try:
         authority = api({"operation": "start", "vm": vm})
         refresh(vm)
+        active_report = api({"operation": "reconcile_report", "vm": vm})
+        assert active_report["runner"] == "verified_alive"
+        assert active_report["attempt"] == authority["attempt"]["id"]
+        assert not active_report["framework_stop_confirmed"]
         project = state / "project"
         (project / "knowledge").mkdir(parents=True)
         (project / "src").mkdir()
@@ -199,6 +203,9 @@ def main():
         api({"operation": "stop", "vm": vm})
         stopped = api({"operation": "show", "vm": vm})
         assert stopped["state"] == "stopped" and stopped["active_lease"] is None
+        stopped_report = api({"operation": "reconcile_report", "vm": vm})
+        assert stopped_report["framework_stop_confirmed"]
+        assert stopped_report["runner_exited"]
         candidate = api({"operation": "save_candidate", "vm": vm})
         api({"operation": "promote_candidate", "image": candidate})
         branch = str(uuid.uuid4())

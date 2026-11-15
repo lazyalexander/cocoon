@@ -24,6 +24,8 @@ pub struct ExecutionRecord {
     pub generation: u64,
     pub lease: String,
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub process_identity: Option<ProcessIdentity>,
     pub request: PathBuf,
     pub events: PathBuf,
     #[serde(default)]
@@ -31,6 +33,13 @@ pub struct ExecutionRecord {
     #[serde(default)]
     pub restore_from: Option<PathBuf>,
     pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessIdentity {
+    started: String,
+    command: String,
 }
 
 pub(crate) fn working_disk_lease(manager: &Manager, id: VmId) -> Result<fs::File> {
@@ -54,31 +63,59 @@ pub(crate) fn working_disk_lease(manager: &Manager, id: VmId) -> Result<fs::File
     Ok(lease)
 }
 
-fn process_alive(pid: u32, request: &Path) -> Result<bool> {
+fn process_field(pid: u32, field: &str) -> Result<Option<String>> {
     let output = Command::new("/bin/ps")
+        .arg("-ww")
         .arg("-p")
         .arg(pid.to_string())
-        .args(["-o", "args="])
+        .args(["-o", field])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()?;
     if !output.status.success() {
-        return Ok(false);
+        return Ok(None);
     }
-    let args = String::from_utf8(output.stdout)
+    let value = String::from_utf8(output.stdout)
         .map_err(|_| crate::Error::from("runner process identity is not UTF-8"))?;
-    Ok(args.contains(&request.to_string_lossy().into_owned()))
+    Ok(Some(value.trim().to_owned()))
 }
 
-fn runner_exited(manager: &Manager, attempt: AttemptId, pid: u32, request: &Path) -> Result<bool> {
+fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>> {
+    let Some(started) = process_field(pid, "lstart=")? else {
+        return Ok(None);
+    };
+    let Some(command) = process_field(pid, "args=")? else {
+        return Ok(None);
+    };
+    Ok(Some(ProcessIdentity { started, command }))
+}
+
+fn process_alive(pid: u32, request: &Path, expected: Option<&ProcessIdentity>) -> Result<bool> {
+    let Some(expected) = expected else {
+        return Ok(false);
+    };
+    let actual = process_identity(pid)?;
+    Ok(actual.as_ref() == Some(expected)
+        && expected
+            .command
+            .ends_with(&request.to_string_lossy().into_owned()))
+}
+
+fn runner_exited(manager: &Manager, execution: &ExecutionRecord) -> Result<bool> {
     let mut children = manager
         .children
         .lock()
         .map_err(|_| crate::Error::from("child registry poisoned"))?;
-    if let Some(child) = children.get_mut(&attempt) {
+    if let Some(child) = children.get_mut(&execution.attempt) {
         return Ok(child.try_wait()?.is_some());
     }
-    Ok(!process_alive(pid, request)?)
+    let Some(identity) = execution.process_identity.as_ref() else {
+        return Ok(false);
+    };
+    let Some(pid) = execution.pid else {
+        return Ok(false);
+    };
+    Ok(!process_alive(pid, &execution.request, Some(identity)).unwrap_or(true))
 }
 
 fn event(path: &Path, expected: &str, token: &str) -> Result<bool> {
@@ -95,7 +132,10 @@ fn event(path: &Path, expected: &str, token: &str) -> Result<bool> {
         .lines()
     {
         let value: serde_json::Value = serde_json::from_str(line)?;
-        if value["event"] == expected && value["token"] == token {
+        if value["event"] == expected
+            && value["token"] == token
+            && (expected != "stopped" || value["termination_confirmed"] == true)
+        {
             return Ok(true);
         }
     }
@@ -126,6 +166,14 @@ fn retained_exit_is_recoverable(execution: &ExecutionRecord) -> bool {
 }
 
 impl Manager {
+    pub(crate) fn execution_stop_confirmed(&self, execution: &ExecutionRecord) -> Result<bool> {
+        Ok(event(
+            &execution.events,
+            "stopped",
+            &execution.attempt.raw().simple().to_string(),
+        )? && runner_exited(self, execution)?)
+    }
+
     pub(crate) fn execution(&self, attempt: AttemptId) -> Result<ExecutionRecord> {
         let record: String = self.db().query_row(
             "SELECT record FROM executions WHERE attempt=?1",
@@ -241,6 +289,7 @@ impl Manager {
             generation: authority.generation,
             lease: authority.lease.to_string(),
             pid: None,
+            process_identity: None,
             request: request.clone(),
             events: events.clone(),
             control: Some(control),
@@ -279,6 +328,26 @@ impl Manager {
             }
         };
         execution.pid = Some(child.id());
+        for _ in 0..20 {
+            if let Some(identity) = process_identity(child.id()).ok().flatten()
+                && identity
+                    .command
+                    .ends_with(&request.to_string_lossy().into_owned())
+            {
+                execution.process_identity = Some(identity);
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if execution.process_identity.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+            vm.state = VmState::Unknown;
+            execution.status = "unknown".into();
+            self.save_vm(&mut vm)?;
+            self.save_execution(&execution)?;
+            return Err("runner process identity could not be captured".into());
+        }
         self.save_execution(&execution)?;
         let deadline = Instant::now() + Duration::from_secs(20);
         let ready_event = if restore.is_some() {
@@ -394,21 +463,23 @@ impl Manager {
             "suspend_intent",
             serde_json::json!({"attempt": attempt}),
         )?;
-        if !process_alive(pid, &execution.request)? {
+        if !process_alive(pid, &execution.request, execution.process_identity.as_ref())
+            .unwrap_or(false)
+        {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
             self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
             return Err("runner identity mismatch; no snapshot signal sent".into());
         }
-        let status = Command::new("/bin/kill")
+        let delivery = Command::new("/bin/kill")
             .arg("-USR1")
             .arg(pid.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()?;
-        if !status.success() {
+            .status();
+        if !matches!(delivery, Ok(status) if status.success()) {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
             self.save_vm(&mut vm)?;
@@ -419,8 +490,8 @@ impl Manager {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let saved = event(&execution.events, "snapshot_saved", &token)?;
-            let stopped = event(&execution.events, "stopped", &token)?
-                && runner_exited(self, attempt, pid, &execution.request)?;
+            let stopped =
+                event(&execution.events, "stopped", &token)? && runner_exited(self, &execution)?;
             if saved && stopped {
                 vm.state = VmState::Suspended;
                 vm.active_lease = None;
@@ -513,9 +584,7 @@ impl Manager {
         let mut execution = self.execution(attempt)?;
         let pid = execution.pid.ok_or("missing runner pid")?;
         let token = attempt.raw().simple().to_string();
-        if event(&execution.events, "stopped", &token)?
-            && runner_exited(self, attempt, pid, &execution.request)?
-        {
+        if event(&execution.events, "stopped", &token)? && runner_exited(self, &execution)? {
             vm.state = if matches!(
                 previous,
                 VmState::Running | VmState::Stopping | VmState::Unknown
@@ -525,7 +594,11 @@ impl Manager {
                 VmState::RecoveryRequired
             };
             vm.active_lease = None;
-            execution.status = "stopped".into();
+            execution.status = if vm.state == VmState::Stopped {
+                "stopped".into()
+            } else {
+                "recovery_required".into()
+            };
             self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
             return Ok(());
@@ -535,21 +608,23 @@ impl Manager {
         self.save_vm(&mut vm)?;
         self.save_execution(&execution)?;
         self.append_journal(id, "stop_intent", serde_json::json!({"attempt": attempt}))?;
-        if !process_alive(pid, &execution.request)? {
+        if !process_alive(pid, &execution.request, execution.process_identity.as_ref())
+            .unwrap_or(false)
+        {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
             self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
             return Err("runner identity mismatch; no signal sent".into());
         }
-        let status = Command::new("/bin/kill")
+        let delivery = Command::new("/bin/kill")
             .arg("-TERM")
             .arg(pid.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()?;
-        if !status.success() {
+            .status();
+        if !matches!(delivery, Ok(status) if status.success()) {
             vm.state = VmState::Unknown;
             execution.status = "unknown".into();
             self.save_vm(&mut vm)?;
@@ -559,9 +634,7 @@ impl Manager {
         let token = attempt.raw().simple().to_string();
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if event(&execution.events, "stopped", &token)?
-                && runner_exited(self, attempt, pid, &execution.request)?
-            {
+            if event(&execution.events, "stopped", &token)? && runner_exited(self, &execution)? {
                 vm.state = if matches!(previous, VmState::Running | VmState::Stopping) {
                     VmState::Stopped
                 } else {
@@ -605,7 +678,7 @@ impl Manager {
         let previous = vm.state;
         let mut execution = self.execution(attempt)?;
         let token = attempt.raw().simple().to_string();
-        let Some(pid) = execution.pid else {
+        let Some(_) = execution.pid else {
             if execution.status == "spawn_failed" {
                 vm.state = VmState::RecoveryRequired;
                 vm.active_lease = None;
@@ -613,7 +686,7 @@ impl Manager {
             }
             return Ok(vm.state);
         };
-        let exited = runner_exited(self, attempt, pid, &execution.request)?;
+        let exited = runner_exited(self, &execution)?;
         let stopped = event(&execution.events, "stopped", &token)? && exited;
         if stopped {
             vm.active_lease = None;
@@ -652,8 +725,70 @@ impl Manager {
             }
             self.save_vm(&mut vm)?;
             self.save_execution(&execution)?;
+        } else if execution.process_identity.is_none()
+            || process_alive(
+                execution.pid.unwrap_or_default(),
+                &execution.request,
+                execution.process_identity.as_ref(),
+            )
+            .is_err()
+        {
+            vm.state = VmState::Unknown;
+            execution.status = "unknown".into();
+            self.save_vm(&mut vm)?;
+            self.save_execution(&execution)?;
         }
         Ok(vm.state)
+    }
+
+    /// Read-only operator evidence. This never changes a VM state or authorizes cleanup.
+    pub fn reconcile_report(&self, id: VmId) -> Result<serde_json::Value> {
+        let vm = self.get(id)?;
+        let unresolved: i64 = self.db().query_row(
+            "SELECT COUNT(*) FROM consumer_operations WHERE vm=?1 AND status IN ('intended','unknown')",
+            [id.to_string()],
+            |row| row.get(0),
+        )?;
+        let Some(attempt) = vm.active_attempt else {
+            return Ok(serde_json::json!({"schema":"cocoon-reconcile-report-v1",
+                "vm":id,"state":vm.state,"attempt":null,"runner":"none",
+                "framework_stop_confirmed":false,"unresolved_operations":unresolved,
+                "next_action":"none"}));
+        };
+        let execution = self.execution(attempt)?;
+        let runner = if let (Some(pid), Some(identity)) =
+            (execution.pid, execution.process_identity.as_ref())
+        {
+            match process_alive(pid, &execution.request, Some(identity)) {
+                Ok(true) => "verified_alive",
+                Ok(false) => "absent_or_different",
+                Err(_) => "unverifiable",
+            }
+        } else {
+            "unverifiable"
+        };
+        let stopped_event = event(
+            &execution.events,
+            "stopped",
+            &attempt.raw().simple().to_string(),
+        )?;
+        let exited = runner_exited(self, &execution)?;
+        let confirmed = stopped_event && exited;
+        let next_action = if confirmed && !matches!(vm.state, VmState::Stopped | VmState::Suspended)
+        {
+            "reconcile"
+        } else if runner == "verified_alive" {
+            "emergency_stop"
+        } else if vm.state == VmState::Unknown || !confirmed && runner != "verified_alive" {
+            "preserve_quarantine"
+        } else {
+            "none"
+        };
+        Ok(serde_json::json!({"schema":"cocoon-reconcile-report-v1",
+            "vm":id,"state":vm.state,"attempt":attempt,"generation":execution.generation,
+            "runner":runner,"stopped_event":stopped_event,"runner_exited":exited,
+            "framework_stop_confirmed":confirmed,"unresolved_operations":unresolved,
+            "next_action":next_action}))
     }
 
     pub fn guest(
@@ -837,11 +972,40 @@ mod tests {
     #[test]
     fn pid_alone_is_not_runner_identity() {
         let mut child = Command::new("/bin/sleep").arg("1").spawn().unwrap();
+        let identity = process_identity(child.id()).unwrap().unwrap();
         assert!(
-            !process_alive(child.id(), Path::new("/definitely-not-the-runner-request")).unwrap()
+            !process_alive(
+                child.id(),
+                Path::new("/definitely-not-the-runner-request"),
+                Some(&identity)
+            )
+            .unwrap()
         );
+        let changed = ProcessIdentity {
+            started: "different start".into(),
+            ..identity
+        };
+        assert!(!process_alive(child.id(), Path::new("1"), Some(&changed)).unwrap());
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn stopped_event_requires_framework_confirmation() {
+        let path = std::env::temp_dir().join(format!("cocoon-event-{}", Uuid::new_v4()));
+        fs::write(
+            &path,
+            b"{\"event\":\"stopped\",\"token\":\"abc\",\"termination_confirmed\":false}\n",
+        )
+        .unwrap();
+        assert!(!event(&path, "stopped", "abc").unwrap());
+        fs::write(
+            &path,
+            b"{\"event\":\"stopped\",\"token\":\"abc\",\"termination_confirmed\":true}\n",
+        )
+        .unwrap();
+        assert!(event(&path, "stopped", "abc").unwrap());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

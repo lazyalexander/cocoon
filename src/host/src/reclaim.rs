@@ -47,9 +47,11 @@ impl Manager {
         let attempt = vm
             .active_attempt
             .ok_or("stopped VM has no execution attempt")?;
-        let status = self.execution(attempt)?.status;
+        let execution = self.execution(attempt)?;
+        let status = &execution.status;
         if (vm.state == VmState::Stopped && status != "stopped")
             || (vm.state == VmState::RecoveryRequired && status != "recovery_required")
+            || !self.execution_stop_confirmed(&execution)?
         {
             return Err("reclaim requires a confirmed stopped execution".into());
         }

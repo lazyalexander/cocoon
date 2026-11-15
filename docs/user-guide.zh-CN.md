@@ -129,6 +129,7 @@ target/release/cocoon host "$COCOON_STATE" operations
 | `operations` | 查询导入/创建意图及完成状态；启动记录另行保存。 |
 | `vm start VM_UUID RUNNER` | 用显式签名 runner 启动真实管理 VM，返回 attempt/generation/lease。 |
 | `vm stop VM_UUID` / `vm reconcile VM_UUID` | 请求确认停止或核对保留观测。 |
+| `vm reconcile-report VM_UUID` | 只读查看操作员证据和允许的下一步，不改变 VM 状态。 |
 | `vm emergency-stop VM_UUID` | 操作员对运行中或状态不确定的执行发起紧急停止。 |
 | `vm reclaim VM_UUID` / `vm reconcile-reclaim VM_UUID` | 操作员在确认停止后回收；显式完成中断的回收。 |
 | `vm reclaim-status VM_UUID` | 查询 `pending` 或 `complete` 回收意图；无意图返回 `null`。 |
@@ -158,6 +159,13 @@ fixture 也可能在 stdout 输出 JSON 报告，应同时保留并检查退出�
 并阻止再次启动；用 `vm reclaim-status` 审查后显式运行 `vm reconcile-reclaim`。VM UUID
 永久保留，不能用
 手动删除代替核对。工作磁盘和私有报告不进入提交或支持附件，只分享脱敏摘要。
+
+停止结果不确定时，先执行 `vm reconcile-report VM_UUID`。报告包含 attempt/generation、
+已验证的 runner 身份状态、框架停止事件与进程退出观测、未决操作数和 `next_action`，
+不包含令牌或私有路径。可验证且仍存活的 runner 可由操作员执行
+`vm emergency-stop VM_UUID`。如果 runner 已消失但没有框架确认停止，保留 `unknown`
+状态及磁盘。对不确定的 guest 请求使用原操作 ID 查询，不得重新提交。报告只读，
+本身不授予回收权限。
 
 ## 7. 管理链路 agent 验收
 

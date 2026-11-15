@@ -144,6 +144,7 @@ The complete command reference is:
 | `operations` | Inspect import/create intents and completion; per-boot records are separate. |
 | `vm start VM_UUID RUNNER` | Start a real managed VM with the explicit signed runner; return attempt/generation/lease. |
 | `vm stop VM_UUID` / `vm reconcile VM_UUID` | Request confirmed stop or reconcile retained observations. |
+| `vm reconcile-report VM_UUID` | Read operator evidence and allowed next action without changing VM state. |
 | `vm emergency-stop VM_UUID` | Operator-only stop attempt for a running or uncertain execution. |
 | `vm reclaim VM_UUID` / `vm reconcile-reclaim VM_UUID` | Operator-only reclaim after confirmed stop; explicitly finish an interrupted reclaim. |
 | `vm reclaim-status VM_UUID` | Inspect `pending` or `complete` reclaim intent; a missing intent returns `null`. |
@@ -178,6 +179,15 @@ intent and blocks new boots; inspect it with `vm reclaim-status` and use
 The VM UUID remains reserved. Do not manually delete state as reconciliation.
 Keep working disks and private reports out of commits and support attachments;
 share sanitized summaries instead.
+
+For an uncertain stop, run `vm reconcile-report VM_UUID` before taking another
+action. The report contains attempt/generation, verified runner identity status,
+framework stop-event and process-exit observations, unresolved operation count,
+and `next_action`; it omits tokens and private paths. A verified live runner can
+receive `vm emergency-stop VM_UUID`. If the runner is absent without a confirmed
+framework stop, preserve `unknown` state and its disk. Use the original operation
+ID to inspect an uncertain guest request; do not submit it again. The report is
+read-only and does not itself authorize reclaim.
 
 ## 7. Managed agent acceptance
 

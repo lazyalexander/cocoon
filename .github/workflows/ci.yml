@@ -1,6 +1,11 @@
 name: Contract checks
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main, dev-advance]
+  pull_request:
+    branches: [main, dev-advance]
+  workflow_dispatch:
 
 concurrency:
   group: cocoon-ci-${{ github.workflow }}-${{ github.ref }}

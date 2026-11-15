@@ -7,7 +7,16 @@ use std::{
     path::Path,
 };
 pub(crate) fn copy_new(source: &Path, target: &Path) -> Result<DiskCopy> {
-    let method = match cocoon_platform::copy_disk(source, target, true)? {
+    copy_controlled(source, target, &|| Ok(()))
+}
+pub(crate) fn copy_controlled(
+    source: &Path,
+    target: &Path,
+    check: &dyn Fn() -> Result<()>,
+) -> Result<DiskCopy> {
+    let method = match cocoon_platform::copy_disk_controlled(source, target, true, || {
+        check().map_err(|e| std::io::Error::other(e.to_string()))
+    })? {
         cocoon_platform::CopyMethod::Clone => DiskCopyMethod::Clone,
         cocoon_platform::CopyMethod::Sparse => DiskCopyMethod::Sparse,
     };
@@ -22,10 +31,14 @@ pub(crate) fn copy_new(source: &Path, target: &Path) -> Result<DiskCopy> {
 }
 
 pub(crate) fn hash(path: &Path) -> Result<String> {
+    hash_controlled(path, &|| Ok(()))
+}
+pub(crate) fn hash_controlled(path: &Path, check: &dyn Fn() -> Result<()>) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut digest = Sha256::new();
-    let mut buffer = [0; 65536];
+    let mut buffer = vec![0; 4 * 1024 * 1024];
     loop {
+        check()?;
         let n = file.read(&mut buffer)?;
         if n == 0 {
             break;

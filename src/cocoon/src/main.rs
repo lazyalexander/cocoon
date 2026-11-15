@@ -47,6 +47,13 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     let manager = Manager::open(Path::new(&args[0]))?;
     let result = match args[1..].iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["image-init"] => manager.initialize_image_api()?,
+        ["image-info", id] => manager.image_summary(Uuid::parse_str(id)?.into())?,
+        ["disk-info", id] => manager.working_disk_summary(Uuid::parse_str(id)?.into())?,
+        ["image-request", file] => { let bytes=bounded_json(file)?; manager.perform_image_operation(&serde_json::from_slice(&bytes)?)? },
+        ["image-status", file] => manager.image_operation_status(&serde_json::from_slice(&bounded_json(file)?)?)?,
+        ["image-cancel", file] => manager.cancel_image_operation(&serde_json::from_slice(&bounded_json(file)?)?)?,
+        ["image-reconcile", file] => manager.reconcile_image_operation(&serde_json::from_slice(&bounded_json(file)?)?)?,
         ["image", "import", kernel, initrd, disk, provenance] => serde_json::json!({"image": manager.import_image(Path::new(kernel), Path::new(initrd), Path::new(disk), provenance)?}),
         ["image", "show", id] => manager.image(Uuid::parse_str(id)?.into())?,
         ["vm", "create", id, image, owner, policy] => {
@@ -70,6 +77,7 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         ["vm", "stop", id] => { manager.stop(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
         ["vm", "emergency-stop", id] => { manager.emergency_stop(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
         ["vm", "reconcile", id] => serde_json::to_value(manager.reconcile(Uuid::parse_str(id)?.into())?)?,
+        ["vm", "reconcile-report", id] => manager.reconcile_report(Uuid::parse_str(id)?.into())?,
         ["vm", "reclaim", id] => { manager.reclaim(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
         ["vm", "reclaim-status", id] => serde_json::to_value(manager.reclaim_status(Uuid::parse_str(id)?.into())?)?,
         ["vm", "reconcile-reclaim", id] => { manager.reconcile_reclaim(Uuid::parse_str(id)?.into())?; serde_json::Value::Null }
@@ -79,8 +87,17 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             serde_json::to_value(manager.call_api(request)?)?
         }
         ["operations"] => serde_json::to_value(manager.operations()?)?,
-        _ => return Err("unknown host command; supported: image import/show, vm create/list/show/start/stop/emergency-stop/reconcile/reclaim/reclaim-status/reconcile-reclaim, operations".into()),
+        _ => return Err("unknown host command; supported: image import/show, vm create/list/show/start/stop/emergency-stop/reconcile/reconcile-report/reclaim/reclaim-status/reconcile-reclaim, operations".into()),
     };
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn bounded_json(file: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    File::open(file)?.take(65537).read_to_end(&mut bytes)?;
+    if bytes.len() > 65536 {
+        return Err("image request exceeds 64 KiB".into());
+    }
+    Ok(bytes)
 }

@@ -129,6 +129,7 @@ target/release/cocoon host "$COCOON_STATE" operations
 | `operations` | 查询导入/创建意图及完成状态；启动记录另行保存。 |
 | `vm start VM_UUID RUNNER` | 用显式签名 runner 启动真实管理 VM，返回 attempt/generation/lease。 |
 | `vm stop VM_UUID` / `vm reconcile VM_UUID` | 请求确认停止或核对保留观测。 |
+| `vm reconcile-report VM_UUID` | 只读查看操作员证据和允许的下一步，不改变 VM 状态。 |
 | `vm emergency-stop VM_UUID` | 操作员对运行中或状态不确定的执行发起紧急停止。 |
 | `vm reclaim VM_UUID` / `vm reconcile-reclaim VM_UUID` | 操作员在确认停止后回收；显式完成中断的回收。 |
 | `vm reclaim-status VM_UUID` | 查询 `pending` 或 `complete` 回收意图；无意图返回 `null`。 |
@@ -158,6 +159,13 @@ fixture 也可能在 stdout 输出 JSON 报告，应同时保留并检查退出�
 并阻止再次启动；用 `vm reclaim-status` 审查后显式运行 `vm reconcile-reclaim`。VM UUID
 永久保留，不能用
 手动删除代替核对。工作磁盘和私有报告不进入提交或支持附件，只分享脱敏摘要。
+
+停止结果不确定时，先执行 `vm reconcile-report VM_UUID`。报告包含 attempt/generation、
+已验证的 runner 身份状态、框架停止事件与进程退出观测、未决操作数和 `next_action`，
+不包含令牌或私有路径。可验证且仍存活的 runner 可由操作员执行
+`vm emergency-stop VM_UUID`。如果 runner 已消失但没有框架确认停止，保留 `unknown`
+状态及磁盘。对不确定的 guest 请求使用原操作 ID 查询，不得重新提交。报告只读，
+本身不授予回收权限。
 
 ## 7. 管理链路 agent 验收
 
@@ -203,3 +211,32 @@ python3 examples/agent_project.py \
 不含任意语言工具链。导出产物留在宿主拥有的私有状态中；VM 停止和回收由
 操作员负责。如果响应结果未知，先用原操作 UUID 配合 `--status-id` 核对，再决定后续
 动作。
+
+## 私有冷启动磁盘镜像
+
+P1.2 的宿主管理接口跨有限控制进程保留磁盘和元数据。
+`host PRIVATE_STORE image-init` 初始化私有管理凭据，返回 `cocoon-image-api-v1`，
+不输出凭据。`image-request FILE` 接收有界 JSON：原请求 UUID、caller、宿主管理
+credential 及 action。操作包括 `import_candidate`（审核过的环境摘要、启动文件
+路径和摘要）、`save_candidate`（VM、代次、工作磁盘摘要）、`promote_candidate`
+（镜像及内容摘要）、`branch`（批准镜像、新 VM、owner）、`rollback`（VM、代次、
+磁盘摘要和批准镜像）。`image-info` 与 `disk-info` 只提供引用和前置条件。
+原宿主套接字也支持经管理凭据认证的 `image_mutation {action}`，复用外层请求 ID
+和 caller；模型工作授权不能调用该操作。
+
+`image-status`、`image-cancel`、`image-reconcile` 使用有界原请求查询文件。
+重复同参请求只查询原结果，变更参数则拒绝。镜像登记或 VM 替换与成功回执在
+同一事务提交。中断后原 OS 锁已释放的运行请求变为未知，不自动重放；明确取消
+并核实后可确认未发布，暂存字节仍私有保留。启动前取消封住原 ID，迟到的成功
+提交优先于后续取消。完成的回滚通过代次绑定的原子回执支持下次启动前的磁盘查询；未完成的旧回滚仍不可用。
+中断的回滚恢复旧盘后保持需要恢复审核，不宣称立即可用。
+
+项目源须确认从未启动，或有原框架停止和运行器退出证据；活动、挂起及不确定
+来源均拒绝。环境与项目来源保持独立，后端批准不授予项目披露或分发权限。
+每个任务分支使用独立 VM、新执行 attempt 和新授权。镜像不保留模型会话，
+也不确立产物验收保管权。内存恢复仍需独立验收。
+
+使用 Python 3.12 运行 `experiments/microvm/image_acceptance.py --help`，明确选择
+已构建二进制、审核过的启动输入和领域检查点项目。三轮真实冷启动链覆盖保存、
+批准、分支、回滚、项目状态和工作簿字节核验、旧授权拒绝，并私有保留证据。
+契约样本通过不能代替真实 VM 验收。

@@ -11,6 +11,16 @@ pub enum CopyMethod {
 }
 
 pub fn copy_disk(source: &Path, destination: &Path, allow_clone: bool) -> io::Result<CopyMethod> {
+    copy_disk_controlled(source, destination, allow_clone, || Ok(()))
+}
+
+pub fn copy_disk_controlled(
+    source: &Path,
+    destination: &Path,
+    allow_clone: bool,
+    mut check: impl FnMut() -> io::Result<()>,
+) -> io::Result<CopyMethod> {
+    check()?;
     if !fs::symlink_metadata(source)?.file_type().is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -28,6 +38,7 @@ pub fn copy_disk(source: &Path, destination: &Path, allow_clone: bool) -> io::Re
         // SAFETY: owned C strings are alive and NUL-terminated. clonefile does not
         // retain these pointers; destination must not exist. Flag 1 forbids symlink following.
         if unsafe { clonefile(src.as_ptr(), dst.as_ptr(), 1) } == 0 {
+            check()?;
             return Ok(CopyMethod::Clone);
         }
         let error = io::Error::last_os_error();
@@ -47,6 +58,7 @@ pub fn copy_disk(source: &Path, destination: &Path, allow_clone: bool) -> io::Re
     let mut bytes = vec![0; 1024 * 1024];
     let mut size = 0;
     loop {
+        check()?;
         let count = input.read(&mut bytes)?;
         if count == 0 {
             break;

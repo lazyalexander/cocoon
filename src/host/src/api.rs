@@ -25,6 +25,9 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostOperation {
+    ImageMutation {
+        action: crate::ImageAction,
+    },
     Start {
         vm: VmId,
     },
@@ -41,6 +44,9 @@ pub enum HostOperation {
         vm: VmId,
     },
     Reconcile {
+        vm: VmId,
+    },
+    ReconcileReport {
         vm: VmId,
     },
     Reclaim {
@@ -139,7 +145,7 @@ impl Manager {
         PathBuf::from(format!("/tmp/cocoon-host-{digest}.sock"))
     }
 
-    fn api_credential(&self) -> Result<String> {
+    pub(crate) fn api_credential(&self) -> Result<String> {
         let path = self.root.join("api-credential");
         if !path.exists() {
             let value = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -234,6 +240,14 @@ impl Manager {
         grant: Option<&AuthorizedWork>,
     ) -> Result<serde_json::Value> {
         match request.operation.clone() {
+            HostOperation::ImageMutation { action } => {
+                self.perform_image_operation(&crate::ImageRequest {
+                    request: request.request,
+                    caller: request.caller.clone(),
+                    credential: request.credential.clone(),
+                    action,
+                })
+            }
             HostOperation::Start { vm } => {
                 Ok(serde_json::to_value(self.start_with_runner(vm, runner)?)?)
             }
@@ -251,6 +265,7 @@ impl Manager {
                 self.agent_context(vm, &request.caller, grant)
             }
             HostOperation::Reconcile { vm } => Ok(serde_json::to_value(self.reconcile(vm)?)?),
+            HostOperation::ReconcileReport { vm } => self.reconcile_report(vm),
             HostOperation::Reclaim { vm } => {
                 self.reclaim(vm)?;
                 Ok(serde_json::Value::Null)
@@ -492,7 +507,8 @@ fn finish_job(manager: &Manager, runner: &Path, mut job: ConnectionJob) {
 fn is_work_lane(operation: &HostOperation) -> bool {
     matches!(
         operation,
-        HostOperation::Guest { .. }
+        HostOperation::ImageMutation { .. }
+            | HostOperation::Guest { .. }
             | HostOperation::Export { .. }
             | HostOperation::Start { .. }
             | HostOperation::Resume { .. }
@@ -530,6 +546,7 @@ fn operation_vm(operation: &HostOperation) -> Result<VmId> {
         | HostOperation::Stop { vm }
         | HostOperation::Start { vm }
         | HostOperation::Reclaim { vm }
+        | HostOperation::ReconcileReport { vm }
         | HostOperation::ReclaimStatus { vm }
         | HostOperation::ReconcileReclaim { vm }
         | HostOperation::EmergencyStop { vm }

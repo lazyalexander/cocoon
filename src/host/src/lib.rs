@@ -21,6 +21,9 @@ mod api;
 mod disk;
 mod error;
 mod grants;
+mod image_effects;
+mod image_management;
+pub use image_management::{ImageAction, ImageQuery, ImageRequest};
 mod journal;
 mod lifecycle;
 pub mod persistence;
@@ -31,7 +34,7 @@ mod store;
 mod types;
 mod versions;
 pub use api::{HostOperation, HostRequest, HostResponse};
-use disk::{copy_new, hash, sync_directory};
+use disk::{hash, sync_directory};
 pub use error::{Error, Result};
 pub use grants::WorkAction;
 pub use journal::JournalEntry;
@@ -161,44 +164,17 @@ impl Manager {
         approved: bool,
         metadata: serde_json::Value,
     ) -> Result<ImageId> {
-        if provenance.trim().is_empty() {
-            return Err("provenance and license information required".into());
-        }
-        let id = ImageId::from(Uuid::new_v4());
-        let operation = OperationId::from(Uuid::new_v4());
-        self.begin(operation, "import_image", id)?;
-        let dir = self.root.join("images").join(id.to_string());
-        fs::create_dir(&dir)?;
-        let mut files = serde_json::Map::new();
-        for (name, source) in [("kernel", kernel), ("initrd", initrd), ("root.raw", disk)] {
-            let target = dir.join(name);
-            let copy = copy_new(source, &target)?;
-            files.insert(
-                name.into(),
-                serde_json::json!({"sha256": hash(&target)?, "copy":copy}),
-            );
-            fs::set_permissions(&target, fs::Permissions::from_mode(0o400))?;
-        }
-        let mut manifest = serde_json::json!({"id":id,"files":files,"provenance":provenance,"trusted":false,"approved":approved,"boot_qualified":false});
-        if let Some(fields) = metadata.as_object() {
-            for (key, value) in fields {
-                manifest[key] = value.clone();
-            }
-        }
-        sync_directory(&dir)?;
-        sync_directory(&self.root.join("images"))?;
-        let db = self.db();
-        let tx = db.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO images VALUES (?1,?2)",
-            params![id.to_string(), manifest.to_string()],
-        )?;
-        tx.execute(
-            "UPDATE operations SET status='complete' WHERE id=?1",
-            [operation.to_string()],
-        )?;
-        tx.commit()?;
-        Ok(id)
+        self.import_controlled(
+            [kernel, initrd, disk],
+            provenance,
+            image_effects::Publication {
+                id: ImageId::from(Uuid::new_v4()),
+                approved,
+                metadata,
+                receipt: None,
+            },
+            &|| Ok(()),
+        )
     }
     pub fn image(&self, id: ImageId) -> Result<serde_json::Value> {
         let record: String = self.db().query_row(
@@ -225,6 +201,17 @@ impl Manager {
         owner: &str,
         policy: FinishPolicy,
     ) -> Result<Vm> {
+        self.create_controlled(id, image, owner, policy, None, &|| Ok(()))
+    }
+    fn create_controlled(
+        &self,
+        id: VmId,
+        image: ImageId,
+        owner: &str,
+        policy: FinishPolicy,
+        receipt: Option<RequestId>,
+        check: &dyn Fn() -> Result<()>,
+    ) -> Result<Vm> {
         if self.reclaim_status(id)?.is_some() {
             return Err("VM identity is reserved by a reclaim intent".into());
         }
@@ -241,7 +228,7 @@ impl Manager {
             .optional()?;
         if let Some(record) = existing {
             let vm: Vm = serde_json::from_str(&record)?;
-            if vm.image == image && vm.owner == owner && vm.policy == policy {
+            if receipt.is_none() && vm.image == image && vm.owner == owner && vm.policy == policy {
                 return Ok(vm);
             }
             return Err("VM identity already exists with different parameters".into());
@@ -249,18 +236,20 @@ impl Manager {
         if self.image(image)?["approved"] != true {
             return Err("VM creation requires an approved image".into());
         }
-        self.verify_image(image)?;
+        self.verify_image_controlled(image, check)?;
+        check()?;
         // A pending create is never automatically replayed after an unknown result.
         self.begin(OperationId::from(id.raw()), "create_vm", id)?;
         let dir = self.root.join("vms").join(id.to_string());
         fs::create_dir(&dir)?;
-        let disk_copy = copy_new(
+        let disk_copy = disk::copy_controlled(
             &self
                 .root
                 .join("images")
                 .join(image.to_string())
                 .join("root.raw"),
             &dir.join("root.raw"),
+            check,
         )?;
         let vm = Vm {
             id,
@@ -281,6 +270,7 @@ impl Manager {
         };
         sync_directory(&dir)?;
         sync_directory(&self.root.join("vms"))?;
+        check()?;
         let db = self.db();
         let tx = db.unchecked_transaction()?;
         tx.execute(
@@ -291,6 +281,13 @@ impl Manager {
             "UPDATE operations SET status='complete' WHERE id=?1",
             [id.to_string()],
         )?;
+        if let Some(request) = receipt {
+            image_management::commit_receipt(
+                &tx,
+                request,
+                &serde_json::json!({"vm":id,"image":image}),
+            )?;
+        }
         tx.commit()?;
         Ok(vm)
     }

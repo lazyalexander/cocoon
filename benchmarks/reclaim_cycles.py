@@ -19,13 +19,16 @@ def main():
     parser.add_argument("--fixture", required=True, type=pathlib.Path)
     parser.add_argument("--kernel", required=True, type=pathlib.Path)
     parser.add_argument("--cycles", type=int, default=100)
+    parser.add_argument("--cocoon", type=pathlib.Path, default=ROOT / "target/release/cocoon")
+    parser.add_argument("--runner", type=pathlib.Path, default=ROOT / "target/cocoon-vz/cocoon-vz")
+    parser.add_argument("--evidence", type=pathlib.Path)
     args = parser.parse_args()
     if args.cycles < 1:
         parser.error("--cycles must be positive")
-    state = ROOT / "experiments/microvm/runs" / ("reclaim-" + uuid.uuid4().hex)
+    state = args.evidence.resolve() if args.evidence else ROOT / "experiments/microvm/runs" / ("reclaim-" + uuid.uuid4().hex)
     state.mkdir(mode=0o700)
-    cli = ROOT / "target/release/cocoon"
-    runner = ROOT / "target/cocoon-vz/cocoon-vz"
+    cli = args.cocoon.resolve(strict=True)
+    runner = args.runner.resolve(strict=True)
     fixture = args.fixture.resolve(strict=True)
     kernel = args.kernel.resolve(strict=True)
 

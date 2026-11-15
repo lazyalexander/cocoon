@@ -15,6 +15,7 @@ impl Manager {
     ) -> Result<()> {
         let check = || self.check_image_cancel(request);
         check()?;
+        self.validate_maintenance_action(request, action)?;
         match action {
             ImageAction::ImportCandidate {
                 environment,

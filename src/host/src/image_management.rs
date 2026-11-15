@@ -9,6 +9,15 @@ use std::{fs, os::unix::fs::OpenOptionsExt, path::PathBuf};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImageAction {
+    Retire {
+        image: ImageId,
+        sha256: String,
+    },
+    ReclaimVm {
+        vm: VmId,
+        generation: u64,
+        revision: u64,
+    },
     ImportCandidate {
         environment: String,
         kernel: PathBuf,
@@ -85,7 +94,7 @@ impl Manager {
             json!({"schema":"cocoon-image-api-v1","disk_images":true,"memory_restore_qualified":false}),
         )
     }
-    fn image_auth(&self, caller: &str, credential: &str) -> Result<()> {
+    pub(crate) fn image_auth(&self, caller: &str, credential: &str) -> Result<()> {
         if caller.is_empty()
             || caller.len() > 128
             || caller.contains('\0')
@@ -239,7 +248,7 @@ impl Manager {
     pub fn image_summary(&self, id: ImageId) -> Result<Value> {
         let image = self.image(id)?;
         Ok(
-            json!({"image":id,"sha256":self.image_content_digest(id)?,"approved":image["approved"],"parent":image["parent"],"source_vm":image["source_vm"],"source_generation":image["source_generation"],"source_environment":image["source_environment"]}),
+            json!({"image":id,"sha256":self.image_content_digest(id)?,"approved":image["approved"],"parent":image["parent"],"source_vm":image["source_vm"],"source_generation":image["source_generation"],"source_environment":image["source_environment"],"retired":image["retired"]}),
         )
     }
     pub fn working_disk_summary(&self, id: VmId) -> Result<Value> {
@@ -253,6 +262,9 @@ impl Manager {
     fn image_no_publication(&self, request: RequestId, action: &ImageAction) -> Result<bool> {
         // A cancelled copy may leave private staging bytes; it never grants reuse.
         match action {
+            ImageAction::Retire { .. } | ImageAction::ReclaimVm { .. } => {
+                Ok(!self.maintenance_started(request)?)
+            }
             ImageAction::Rollback {
                 vm, disk_sha256, ..
             } => {
@@ -284,6 +296,10 @@ impl Manager {
                 |r| r.get(0),
             )?;
             let action: ImageAction = serde_json::from_str(&text)?;
+            if self.maintenance_started(query.request)? {
+                self.finish_maintenance(query.request, &action)?;
+                return self.image_record(query.request, &query.caller);
+            }
             let state = if record["cancel_requested"] == true
                 && self.image_no_publication(query.request, &action)?
             {

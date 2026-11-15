@@ -38,6 +38,18 @@ impl Manager {
     pub fn reclaim(&self, id: VmId) -> Result<()> {
         let _reclaim_lease = reclaim_lease(self, id)?;
         let _lease = working_disk_lease(self, id)?;
+        self.validate_reclaim(id)?;
+        let db = self.db();
+        db.execute(
+            "INSERT INTO reclaim_intents(vm,status) VALUES (?1,'pending')",
+            [id.to_string()],
+        )?;
+        drop(db);
+        // A failed cleanup leaves the durable intent and blocks any new boot.
+        self.finish_reclaim(id)
+    }
+
+    pub(crate) fn validate_reclaim(&self, id: VmId) -> Result<()> {
         let vm = self.get(id)?;
         if !matches!(vm.state, VmState::Stopped | VmState::RecoveryRequired)
             || vm.active_lease.is_some()
@@ -74,13 +86,7 @@ impl Manager {
         if unresolved != 0 || pending != 0 || rollback != 0 {
             return Err("reclaim requires reconciliation of pending operations".into());
         }
-        db.execute(
-            "INSERT INTO reclaim_intents(vm,status) VALUES (?1,'pending')",
-            [id.to_string()],
-        )?;
-        drop(db);
-        // A failed cleanup leaves the durable intent and blocks any new boot.
-        self.finish_reclaim(id)
+        Ok(())
     }
 
     /// Explicitly finish an interrupted reclaim; never infer that deletion succeeded.

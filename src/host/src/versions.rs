@@ -67,6 +67,7 @@ impl Manager {
     }
 
     pub fn save_candidate(&self, id: VmId) -> Result<ImageId> {
+        let _image_use = self.image_use_lease(false)?;
         let _lease = crate::lifecycle::working_disk_lease(self, id)?;
         self.recover_rollback(id)?;
         let vm = self.get(id)?;
@@ -92,6 +93,7 @@ impl Manager {
     }
 
     pub fn promote_candidate(&self, id: ImageId) -> Result<()> {
+        let _image_use = self.image_use_lease(false)?;
         self.verify_image(id)?;
         let mut manifest = self.image(id)?;
         if manifest["source_vm"].is_null() || manifest["approved"] == true {
@@ -124,6 +126,7 @@ impl Manager {
     }
 
     pub fn rollback(&self, id: VmId, baseline: ImageId) -> Result<()> {
+        let _image_use = self.image_use_lease(false)?;
         let _lease = crate::lifecycle::working_disk_lease(self, id)?;
         self.recover_rollback(id)?;
         let mut vm = self.get(id)?;

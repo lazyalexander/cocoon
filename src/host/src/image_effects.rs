@@ -21,6 +21,9 @@ impl Manager {
         check: &dyn Fn() -> Result<()>,
     ) -> Result<()> {
         let manifest = self.image(id)?;
+        if manifest["retired"] == true {
+            return Err("image is retired".into());
+        }
         for name in ["kernel", "initrd", "root.raw"] {
             if manifest["files"][name]["sha256"]
                 != hash_controlled(
@@ -40,6 +43,7 @@ impl Manager {
         publication: Publication,
         check: &dyn Fn() -> Result<()>,
     ) -> Result<ImageId> {
+        let _image_use = self.image_use_lease(false)?;
         if provenance.trim().is_empty() {
             return Err("provenance and license information required".into());
         }
@@ -135,6 +139,9 @@ impl Manager {
     ) -> Result<()> {
         let check = || self.check_image_cancel(request);
         match action {
+            ImageAction::Retire { .. } | ImageAction::ReclaimVm { .. } => {
+                self.begin_maintenance(request, action)?
+            }
             ImageAction::ImportCandidate {
                 environment,
                 kernel,
@@ -219,6 +226,7 @@ impl Manager {
             return Err("rollback action required".into());
         };
         let (id, generation, image) = (*id, *generation, *image);
+        let _image_use = self.image_use_lease(false)?;
         let _lease = crate::lifecycle::working_disk_lease(self, id)?;
         self.recover_rollback(id)?;
         self.image_source_ready(id)?;

@@ -9,6 +9,15 @@ use std::{fs, os::unix::fs::OpenOptionsExt, path::PathBuf};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImageAction {
+    Retire {
+        image: ImageId,
+        sha256: String,
+    },
+    ReclaimVm {
+        vm: VmId,
+        generation: u64,
+        revision: u64,
+    },
     ImportCandidate {
         environment: String,
         kernel: PathBuf,
@@ -77,12 +86,6 @@ pub(crate) fn commit_receipt(
     }
     Ok(())
 }
-fn hex(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
 
 impl Manager {
     pub fn initialize_image_api(&self) -> Result<Value> {
@@ -91,7 +94,7 @@ impl Manager {
             json!({"schema":"cocoon-image-api-v1","disk_images":true,"memory_restore_qualified":false}),
         )
     }
-    fn image_auth(&self, caller: &str, credential: &str) -> Result<()> {
+    pub(crate) fn image_auth(&self, caller: &str, credential: &str) -> Result<()> {
         if caller.is_empty()
             || caller.len() > 128
             || caller.contains('\0')
@@ -236,109 +239,6 @@ impl Manager {
         )?;
         self.image_record(request.request, &request.caller)
     }
-    fn validate_image_action(&self, request: RequestId, action: &ImageAction) -> Result<()> {
-        let check = || self.check_image_cancel(request);
-        check()?;
-        match action {
-            ImageAction::ImportCandidate {
-                environment,
-                kernel,
-                initrd,
-                disk,
-                kernel_sha256,
-                initrd_sha256,
-                disk_sha256,
-            } => {
-                if !hex(environment) {
-                    return Err("invalid environment identity".into());
-                }
-                for (path, sha) in [
-                    (kernel, kernel_sha256),
-                    (initrd, initrd_sha256),
-                    (disk, disk_sha256),
-                ] {
-                    if !path.is_absolute()
-                        || !fs::symlink_metadata(path)?.is_file()
-                        || !hex(sha)
-                        || crate::disk::hash_controlled(path, &check)? != *sha
-                    {
-                        return Err("image source digest mismatch".into());
-                    }
-                }
-            }
-            ImageAction::SaveCandidate {
-                vm,
-                generation,
-                disk_sha256,
-            }
-            | ImageAction::Rollback {
-                vm,
-                generation,
-                disk_sha256,
-                ..
-            } => {
-                let current = self.get(*vm)?;
-                if current.generation != *generation || !hex(disk_sha256) {
-                    return Err("image source generation mismatch".into());
-                }
-                self.image_source_ready(*vm)?;
-                if crate::disk::hash_controlled(
-                    &self.root.join("vms").join(vm.to_string()).join("root.raw"),
-                    &check,
-                )? != *disk_sha256
-                {
-                    return Err("working disk changed".into());
-                }
-            }
-            _ => {}
-        }
-        match action {
-            ImageAction::PromoteCandidate { image, sha256 } => {
-                self.match_image(*image, sha256, &check)?;
-                let manifest = self.image(*image)?;
-                if manifest["approved"] != false
-                    || (manifest["source_vm"].is_null() && manifest["source_environment"].is_null())
-                {
-                    return Err("image is not a candidate".into());
-                }
-            }
-            ImageAction::Branch {
-                image,
-                sha256,
-                vm,
-                owner,
-            } => {
-                self.match_image(*image, sha256, &check)?;
-                if self.image(*image)?["approved"] != true
-                    || owner.is_empty()
-                    || owner.len() > 256
-                    || self.get(*vm).is_ok()
-                    || self.root.join("vms").join(vm.to_string()).exists()
-                {
-                    return Err("branch target or source unavailable".into());
-                }
-            }
-            ImageAction::Rollback { image, sha256, .. } => {
-                self.match_image(*image, sha256, &check)?;
-                if self.image(*image)?["approved"] != true {
-                    return Err("rollback image is not approved".into());
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    fn match_image(
-        &self,
-        id: ImageId,
-        expected: &str,
-        check: &dyn Fn() -> Result<()>,
-    ) -> Result<()> {
-        if !hex(expected) || self.image_content_digest(id)? != expected {
-            return Err("image identity changed".into());
-        }
-        self.verify_image_controlled(id, check)
-    }
     pub fn image_content_digest(&self, id: ImageId) -> Result<String> {
         let image = self.image(id)?;
         digest(
@@ -348,7 +248,7 @@ impl Manager {
     pub fn image_summary(&self, id: ImageId) -> Result<Value> {
         let image = self.image(id)?;
         Ok(
-            json!({"image":id,"sha256":self.image_content_digest(id)?,"approved":image["approved"],"parent":image["parent"],"source_vm":image["source_vm"],"source_generation":image["source_generation"],"source_environment":image["source_environment"]}),
+            json!({"image":id,"sha256":self.image_content_digest(id)?,"approved":image["approved"],"parent":image["parent"],"source_vm":image["source_vm"],"source_generation":image["source_generation"],"source_environment":image["source_environment"],"retired":image["retired"]}),
         )
     }
     pub fn working_disk_summary(&self, id: VmId) -> Result<Value> {
@@ -362,6 +262,9 @@ impl Manager {
     fn image_no_publication(&self, request: RequestId, action: &ImageAction) -> Result<bool> {
         // A cancelled copy may leave private staging bytes; it never grants reuse.
         match action {
+            ImageAction::Retire { .. } | ImageAction::ReclaimVm { .. } => {
+                Ok(!self.maintenance_started(request)?)
+            }
             ImageAction::Rollback {
                 vm, disk_sha256, ..
             } => {
@@ -393,6 +296,10 @@ impl Manager {
                 |r| r.get(0),
             )?;
             let action: ImageAction = serde_json::from_str(&text)?;
+            if self.maintenance_started(query.request)? {
+                self.finish_maintenance(query.request, &action)?;
+                return self.image_record(query.request, &query.caller);
+            }
             let state = if record["cancel_requested"] == true
                 && self.image_no_publication(query.request, &action)?
             {
@@ -408,3 +315,5 @@ impl Manager {
         self.image_record(query.request, &query.caller)
     }
 }
+
+mod validation;

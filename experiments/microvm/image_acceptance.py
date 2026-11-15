@@ -26,6 +26,7 @@ def main():
     for key in ('cocoon', 'runner', 'kernel', 'initrd', 'disk', 'project', 'evidence'):
         parser.add_argument('--' + key, type=Path, required=True)
     parser.add_argument('--rounds', type=int, choices=range(1, 4), default=3)
+    parser.add_argument('--resume-checkpoint', action='store_true')
     args = parser.parse_args()
     root = args.evidence.resolve(); root.mkdir(mode=0o700)
     state = root / 'state'; cli = args.cocoon.resolve(strict=True); runner = args.runner.resolve(strict=True)
@@ -101,6 +102,13 @@ def main():
             assert uuid.UUID(active[resumed]['attempt']['id']) != uuid.UUID(client.attempt)
             verification = reader.run(['/opt/python/bin/python3.12', '-I', '-B', '/workspace/checkpoint.py', 'verify', '/workspace/project'])
             assert verification['code'] == 0 and json.loads(verification['stdout'])['passed'], verification
+            if args.resume_checkpoint:
+                selected = ['/opt/python/bin/python3.12', '-I', '-B', '/workspace/checkpoint.py', 'resume', '/workspace/project']
+                restored = reader.run(selected + [sha(args.project / 'input.md'), sha(args.project / 'input.xlsx')])
+                assert restored['code'] == 0 and json.loads(restored['stdout'])['selected_inputs_match'], restored
+                wrong = reader.run(selected + ['0' * 64, sha(args.project / 'input.xlsx')])
+                assert wrong['code'] != 0, 'Foreign accepted input digest was accepted'
+
             copied = reader.run(['/bin/cp', '/workspace/project/result.xlsx', '/workspace/result.xlsx']); assert copied['code'] == 0
             exported = reader.export('result.xlsx', 'resumed.xlsx')
             assert exported['sha256'] == sha(args.project / 'input.xlsx')

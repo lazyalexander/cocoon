@@ -636,13 +636,22 @@ mod lane_tests {
         thread::spawn(move || {
             let _ = manager.serve_api(Path::new("/unused"));
         });
-        for _ in 0..100 {
-            if socket.exists() {
-                break;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut guest = loop {
+            match UnixStream::connect(&socket) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if Instant::now() < deadline
+                        && matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                        ) =>
+                {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => panic!("original API listener did not become ready: {error}"),
             }
-            thread::sleep(Duration::from_millis(10));
-        }
-        let mut guest = UnixStream::connect(&socket).unwrap();
+        };
         send(
             &HostRequest {
                 request: RequestId::from(Uuid::new_v4()),

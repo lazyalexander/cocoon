@@ -47,6 +47,8 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     let manager = Manager::open(Path::new(&args[0]))?;
     let result = match args[1..].iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["image-maintenance-info"] => manager.maintenance_capabilities(),
+        ["image-inventory"] => manager.resource_inventory()?,
         ["image-init"] => manager.initialize_image_api()?,
         ["image-info", id] => manager.image_summary(Uuid::parse_str(id)?.into())?,
         ["disk-info", id] => manager.working_disk_summary(Uuid::parse_str(id)?.into())?,

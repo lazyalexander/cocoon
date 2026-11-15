@@ -9,3 +9,12 @@ Workspace dependencies: platform, guest-wire, SQLite and serialization. See [arc
 ## Boundary
 
 Keep store/schema in store.rs, work grants in grants.rs, API routing in api.rs, lifecycle supervision and runner identity evidence in lifecycle.rs, host-owned reclaim intents and artifact retention in reclaim.rs, and image/version custody in versions.rs. Unknown execution outcomes require reconciliation; guest data never proves termination. Reclaim requires confirmed stop evidence and cannot be authorized by a work grant.
+
+Manual maintenance uses `image-maintenance-info` and `image-inventory` for local
+operator inspection. `image-request` accepts `retire` (image + digest) or
+`reclaim_vm` (VM + generation + revision), authenticated as existing image writes.
+Live references, unknown operations and unverified termination block cleanup.
+Retirement keeps metadata and receipts; interrupted deletion requires the original
+`image-reconcile`. Cancellation after the durable deletion intent cannot restore
+bytes. VM cleanup retains exported artifacts. Allocated sizes include shared-block
+estimates and are not a promise of freed space. No automatic GC is enabled.

@@ -26,6 +26,7 @@ mod image_management;
 pub use image_management::{ImageAction, ImageQuery, ImageRequest};
 mod journal;
 mod lifecycle;
+mod maintenance;
 pub mod persistence;
 mod project;
 mod protection;
@@ -186,6 +187,9 @@ impl Manager {
     }
     fn verify_image(&self, id: ImageId) -> Result<()> {
         let manifest = self.image(id)?;
+        if manifest["retired"] == true {
+            return Err("image is retired".into());
+        }
         for name in ["kernel", "initrd", "root.raw"] {
             let actual = hash(&self.root.join("images").join(id.to_string()).join(name))?;
             if manifest["files"][name]["sha256"].as_str() != Some(&actual) {
@@ -212,6 +216,7 @@ impl Manager {
         receipt: Option<RequestId>,
         check: &dyn Fn() -> Result<()>,
     ) -> Result<Vm> {
+        let _image_use = self.image_use_lease(false)?;
         if self.reclaim_status(id)?.is_some() {
             return Err("VM identity is reserved by a reclaim intent".into());
         }

@@ -195,3 +195,51 @@ fn uncommitted_disk_swap_restores_previous_bytes_without_a_success_receipt() {
     assert_eq!(f.manager.get(vm).unwrap().state, VmState::RecoveryRequired);
     assert!(f.manager.working_disk_summary(vm).is_err());
 }
+
+#[test]
+fn stopped_postrollback_source_requires_its_committed_generation_bound_receipt() {
+    let f = Fixture::new();
+    let image = f.image(b"original");
+    let id = VmId::from(Uuid::new_v4());
+    let mut vm = f
+        .manager
+        .create(id, image, "test-host", FinishPolicy::Retain)
+        .unwrap();
+    vm.generation = 1;
+    vm.state = VmState::Stopped;
+    f.manager.save_vm(&mut vm).unwrap();
+    assert!(f.manager.working_disk_summary(id).is_err());
+    let request = f.admit(ImageAction::Rollback {
+        vm: id,
+        generation: 1,
+        disk_sha256: crate::disk::hash(&f.root.join("vms").join(id.to_string()).join("root.raw"))
+            .unwrap(),
+        image,
+        sha256: f.manager.image_content_digest(image).unwrap(),
+    });
+    {
+        let db = f.manager.db();
+        let tx = db.unchecked_transaction().unwrap();
+        commit_receipt(&tx, request.request, &json!({"vm":id,"image":image})).unwrap();
+        tx.commit().unwrap();
+    }
+    assert_eq!(f.manager.working_disk_summary(id).unwrap()["generation"], 1);
+    vm.generation = 2;
+    f.manager.save_vm(&mut vm).unwrap();
+    assert!(f.manager.working_disk_summary(id).is_err());
+}
+
+#[test]
+fn unresolved_legacy_rollback_is_never_adopted_as_an_unstarted_image_source() {
+    let f = Fixture::new();
+    let image = f.image(b"original");
+    let id = VmId::from(Uuid::new_v4());
+    f.manager
+        .create(id, image, "test-host", FinishPolicy::Retain)
+        .unwrap();
+    assert!(f.manager.working_disk_summary(id).is_ok());
+    f.manager
+        .begin(OperationId::from(Uuid::new_v4()), "rollback", id)
+        .unwrap();
+    assert!(f.manager.working_disk_summary(id).is_err());
+}

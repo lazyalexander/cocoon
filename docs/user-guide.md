@@ -263,6 +263,7 @@ and the success receipt share one transaction. A free OS lease after interruptio
 makes a running request unknown, never replayable. Explicit cancellation and
 reconciliation can confirm no publication; staged bytes stay private. Cancellation
 before admission seals the original ID. A committed success wins over late cancel.
+A completed rollback uses its generation-bound atomic receipt for disk queries before another boot; pending legacy rollback operations remain unavailable.
 An interrupted rollback restores the previous disk and retains recovery-required
 state, rather than claiming the VM is immediately reusable.
 

@@ -112,6 +112,8 @@ def main():
             stop(resumed)
             working = direct('disk-info', resumed)
             mutation({'operation': 'rollback', **working, 'image': environment['image'], 'sha256': environment['sha256']})
+            restored = direct('disk-info', resumed)
+            assert restored['generation'] == working['generation'] and restored['disk_sha256'] == hashes['disk_sha256']
             fresh = start(resumed)
             empty = fresh.run(['/bin/sh', '-c', 'test ! -e /workspace/project && /opt/python/bin/python3.12 --version'])
             assert empty['code'] == 0, empty

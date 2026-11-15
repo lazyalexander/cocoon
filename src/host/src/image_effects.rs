@@ -101,6 +101,16 @@ impl Manager {
         if vm.active_lease.is_some() {
             return Err("image source still leased".into());
         }
+        let unsettled:bool=self.db().query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE kind='rollback' AND target=?1 AND status!='complete') OR EXISTS(SELECT 1 FROM rollback_intents WHERE vm=?1)",[id.to_string()],|r|r.get(0))?;
+        if unsettled {
+            return Err("original rollback requires reconciliation".into());
+        }
+        if vm.state == VmState::Stopped && vm.active_attempt.is_none() {
+            let restored:bool=self.db().query_row("SELECT EXISTS(SELECT 1 FROM image_operations WHERE state='succeeded' AND json_extract(action,'$.operation')='rollback' AND json_extract(action,'$.vm')=?1 AND json_extract(action,'$.generation')=?2 AND json_extract(result,'$.image')=?3 AND json_extract(result,'$.vm')=?1)",rusqlite::params![id.to_string(),i64::try_from(vm.generation).map_err(|_|crate::Error::from("image generation exceeds store limit"))?,vm.image.to_string()],|r|r.get(0))?;
+            if restored {
+                return Ok(());
+            }
+        }
         if matches!(vm.state, VmState::Prepared | VmState::Stopped)
             && vm.generation == 0
             && vm.active_attempt.is_none()

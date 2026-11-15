@@ -241,3 +241,41 @@ The fixture provides a minimal shell, not an arbitrary language toolchain. The
 export remains in host-owned private state; the operator handles VM stop and
 reclaim. After an uncertain response, use `--status-id` with
 the original operation UUID to reconcile it before taking further action.
+
+## Private cold-disk images
+
+P1.2's host-only image API stores disk bytes and metadata across finite control
+processes. `host PRIVATE_STORE image-init` initializes its private credential and
+reports `cocoon-image-api-v1`; it never prints the credential. `image-request FILE`
+accepts a bounded JSON `request` UUID, `caller`, host `credential`, and typed
+`action`. Actions are `import_candidate` (reviewed environment identity plus
+kernel/initrd/disk paths and digests), `save_candidate` (VM, generation, working-disk
+digest), `promote_candidate` (image/content digest), `branch` (approved image/digest,
+new VM/owner), and `rollback` (VM/generation/disk digest and approved image/digest).
+`image-info IMAGE` and `disk-info VM` return references/preconditions, not grants.
+The existing host socket also accepts authenticated `image_mutation {action}`,
+using the outer request ID and caller; scoped model work grants cannot invoke it.
+
+`image-status`, `image-cancel` and `image-reconcile` accept a bounded query file
+with the original request/caller/credential. A repeated identical request only
+queries its original result; changed parameters fail. Publication/VM replacement
+and the success receipt share one transaction. A free OS lease after interruption
+makes a running request unknown, never replayable. Explicit cancellation and
+reconciliation can confirm no publication; staged bytes stay private. Cancellation
+before admission seals the original ID. A committed success wins over late cancel.
+An interrupted rollback restores the previous disk and retains recovery-required
+state, rather than claiming the VM is immediately reusable.
+
+A project source must be positively unstarted or stopped with its original
+framework-stop and runner-exit evidence. Active, suspended and uncertain sources
+fail. Imported environment and guest-derived project provenance stay distinct;
+backend approval is not permission to disclose or distribute private project data.
+Every task branch receives a separate VM, new execution attempt and fresh grants.
+Images do not preserve model sessions or establish accepted-artifact custody.
+Memory restoration remains independently unqualified.
+
+Run `experiments/microvm/image_acceptance.py --help` with Python 3.12, explicit
+built binaries, reviewed boot inputs and a selected document checkpoint project.
+It performs three real cold-boot/save/promote/branch/rollback cycles, verifies
+project state and exported workbook bytes, checks stale-grant denial, and retains
+private evidence. Contract fixtures alone do not establish VM execution support.

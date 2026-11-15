@@ -47,6 +47,13 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     let manager = Manager::open(Path::new(&args[0]))?;
     let result = match args[1..].iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["image-init"] => manager.initialize_image_api()?,
+        ["image-info", id] => manager.image_summary(Uuid::parse_str(id)?.into())?,
+        ["disk-info", id] => manager.working_disk_summary(Uuid::parse_str(id)?.into())?,
+        ["image-request", file] => { let bytes=bounded_json(file)?; manager.perform_image_operation(&serde_json::from_slice(&bytes)?)? },
+        ["image-status", file] => manager.image_operation_status(&serde_json::from_slice(&bounded_json(file)?)?)?,
+        ["image-cancel", file] => manager.cancel_image_operation(&serde_json::from_slice(&bounded_json(file)?)?)?,
+        ["image-reconcile", file] => manager.reconcile_image_operation(&serde_json::from_slice(&bounded_json(file)?)?)?,
         ["image", "import", kernel, initrd, disk, provenance] => serde_json::json!({"image": manager.import_image(Path::new(kernel), Path::new(initrd), Path::new(disk), provenance)?}),
         ["image", "show", id] => manager.image(Uuid::parse_str(id)?.into())?,
         ["vm", "create", id, image, owner, policy] => {
@@ -84,4 +91,13 @@ fn host(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn bounded_json(file: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    File::open(file)?.take(65537).read_to_end(&mut bytes)?;
+    if bytes.len() > 65536 {
+        return Err("image request exceeds 64 KiB".into());
+    }
+    Ok(bytes)
 }

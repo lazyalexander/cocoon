@@ -194,6 +194,12 @@ impl Manager {
     pub(crate) fn save_vm(&self, vm: &mut crate::Vm) -> Result<()> {
         let db = self.db();
         let tx = db.unchecked_transaction()?;
+        Self::write_vm(&tx, vm)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn write_vm(tx: &rusqlite::Transaction<'_>, vm: &mut crate::Vm) -> Result<()> {
         let current_record: String = tx.query_row(
             "SELECT record FROM vms WHERE id=?1",
             [vm.id.to_string()],
@@ -215,7 +221,6 @@ impl Manager {
         if changed != 1 {
             return Err("VM state changed concurrently".into());
         }
-        tx.commit()?;
         Ok(())
     }
 

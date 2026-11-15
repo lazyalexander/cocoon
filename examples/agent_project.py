@@ -182,7 +182,7 @@ class WorkClient:
                     raise ValueError("project symlinks are unsupported")
             for name in names:
                 path = pathlib.Path(parent) / name
-                info = path.stat(follow_symlinks=False)
+                info = path.lstat()
                 if not stat.S_ISREG(info.st_mode):
                     raise ValueError("project contains a non-regular file")
                 total += info.st_size

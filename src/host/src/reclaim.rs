@@ -1,5 +1,7 @@
 //! Operator-owned VM reclamation. Pending intents require explicit reconciliation.
-use crate::{Manager, Result, VmId, VmState, disk::sync_directory, lifecycle::working_disk_lease};
+use crate::{
+    Manager, RequestId, Result, VmId, VmState, disk::sync_directory, lifecycle::working_disk_lease,
+};
 use rusqlite::{OptionalExtension, params};
 use std::{
     fs,
@@ -22,6 +24,12 @@ fn reclaim_lease(manager: &Manager, id: VmId) -> Result<fs::File> {
     Ok(file)
 }
 
+struct ReclaimSelection {
+    request: RequestId,
+    generation: u64,
+    revision: u64,
+}
+
 impl Manager {
     pub fn reclaim_status(&self, id: VmId) -> Result<Option<String>> {
         Ok(self
@@ -36,17 +44,71 @@ impl Manager {
 
     /// Reclaim a confirmed-stopped VM. Exported artifacts move to host-owned storage.
     pub fn reclaim(&self, id: VmId) -> Result<()> {
+        self.reclaim_selected(id, None)
+    }
+    pub(crate) fn reclaim_image_request(
+        &self,
+        id: VmId,
+        request: RequestId,
+        generation: u64,
+        revision: u64,
+    ) -> Result<()> {
+        self.reclaim_selected(
+            id,
+            Some(ReclaimSelection {
+                request,
+                generation,
+                revision,
+            }),
+        )
+    }
+    fn reclaim_selected(&self, id: VmId, selection: Option<ReclaimSelection>) -> Result<()> {
         let _reclaim_lease = reclaim_lease(self, id)?;
         let _lease = working_disk_lease(self, id)?;
         self.validate_reclaim(id)?;
-        let db = self.db();
-        db.execute(
-            "INSERT INTO reclaim_intents(vm,status) VALUES (?1,'pending')",
-            [id.to_string()],
-        )?;
-        drop(db);
+        {
+            let db = self.db();
+            let tx = db.unchecked_transaction()?;
+            if let Some(selection) = selection {
+                Self::bind_reclaim_selection(&tx, id, &selection)?;
+            }
+            tx.execute(
+                "INSERT INTO reclaim_intents(vm,status) VALUES (?1,'pending')",
+                [id.to_string()],
+            )?;
+            tx.commit()?;
+        }
         // A failed cleanup leaves the durable intent and blocks any new boot.
         self.finish_reclaim(id)
+    }
+
+    fn bind_reclaim_selection(
+        tx: &rusqlite::Transaction<'_>,
+        id: VmId,
+        selection: &ReclaimSelection,
+    ) -> Result<()> {
+        let record: String = tx.query_row(
+            "SELECT record FROM vms WHERE id=?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )?;
+        let current: crate::Vm = serde_json::from_str(&record)?;
+        if current.generation != selection.generation || current.revision != selection.revision {
+            return Err("VM reclaim approval changed before its durable fence".into());
+        }
+        let cancel: bool = tx.query_row(
+            "SELECT cancel_requested!=0 FROM image_operations WHERE id=?1 AND state='running'",
+            [selection.request.to_string()],
+            |row| row.get(0),
+        )?;
+        if cancel {
+            return Err("VM reclaim cancelled before its durable fence".into());
+        }
+        tx.execute(
+            "INSERT INTO maintenance_intents VALUES (?1,'reclaim_vm',?2,'pending')",
+            params![selection.request.to_string(), id.to_string()],
+        )?;
+        Ok(())
     }
 
     pub(crate) fn validate_reclaim(&self, id: VmId) -> Result<()> {
@@ -255,3 +317,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "reclaim/selection_tests.rs"]
+mod selection_tests;

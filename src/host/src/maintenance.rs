@@ -126,12 +126,17 @@ impl Manager {
         let _exclusive = self.image_use_lease(true)?;
         self.validate_maintenance_action(request, action)?;
         self.check_image_cancel(request)?;
-        let (kind, target) = match action {
-            ImageAction::Retire { image, .. } => ("retire", image.to_string()),
-            ImageAction::ReclaimVm { vm, .. } => ("reclaim_vm", vm.to_string()),
+        match action {
+            ImageAction::Retire { image, .. } => {
+                self.persist_maintenance_intent(request, "retire", &image.to_string())?
+            }
+            ImageAction::ReclaimVm {
+                vm,
+                generation,
+                revision,
+            } => self.reclaim_image_request(*vm, request, *generation, *revision)?,
             _ => return Err("maintenance action required".into()),
-        };
-        self.persist_maintenance_intent(request, kind, &target)?;
+        }
         // Past this durable fence cancellation cannot promise to restore removed bytes.
         self.finish_maintenance_locked(request, action)
     }
@@ -205,21 +210,13 @@ impl Manager {
                 sync_directory(&self.root.join("images"))?;
                 json!({"image":image,"sha256":sha256,"retired":true,"artifacts_preserved":true})
             }
-            ImageAction::ReclaimVm {
-                vm,
-                generation,
-                revision,
-            } if kind == "reclaim_vm" && target == vm.to_string() => {
+            ImageAction::ReclaimVm { vm, .. }
+                if kind == "reclaim_vm" && target == vm.to_string() =>
+            {
                 match self.reclaim_status(*vm)?.as_deref() {
                     Some("complete") => {}
                     Some("pending") => self.reconcile_reclaim(*vm)?,
-                    _ => {
-                        let current = self.get(*vm)?;
-                        if current.generation != *generation || current.revision != *revision {
-                            return Err("original VM reclaim target changed".into());
-                        }
-                        self.reclaim(*vm)?;
-                    }
+                    _ => return Err("original VM reclaim fence unavailable".into()),
                 }
                 json!({"vm":vm,"reclaimed":true,"artifacts_preserved":true})
             }
